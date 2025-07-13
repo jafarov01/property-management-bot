@@ -176,3 +176,88 @@ def format_checkin_error_alert(property_code: str, new_guest: str, prop_status: 
         InlineKeyboardButton("Suggest Relocation", switch_inline_query_current_chat=f"/relocate {property_code} "),
     ]]
     return alert_text, InlineKeyboardMarkup(keyboard)
+
+def format_conflict_alert(prop_code: str, first_booking, second_booking) -> tuple:
+    """Generates a detailed conflict alert with options to choose which guest to relocate."""
+    from datetime import datetime
+    readable_date = datetime.now().strftime('%B %d, %Y')
+    
+    alert_text = (
+        f"*{readable_date}*\n🚨 *OVERBOOKING CONFLICT* for `{prop_code}` 🚨\n\n"
+        f"Two bookings exist for the same property. Please choose which guest to relocate.\n\n"
+        f"1️⃣ *First Guest (Currently Active):*\n"
+        f"  - Name: *{first_booking.guest_name}*\n"
+        f"  - Platform: `{first_booking.platform}`\n\n"
+        f"2️⃣ *Second Guest (Pending Relocation):*\n"
+        f"  - Name: *{second_booking.guest_name}*\n"
+        f"  - Platform: `{second_booking.platform}`\n\n"
+        f"To resolve, use `/relocate {prop_code} [new_room]`."
+    )
+    
+    # Pass both booking IDs to the swap button for the swap logic
+    keyboard = [[
+        InlineKeyboardButton(f"Keep 2nd Guest (Relocate {first_booking.guest_name})", callback_data=f"swap_relocation:{first_booking.id}:{second_booking.id}"),
+    ], [
+        InlineKeyboardButton("Show Available Rooms", callback_data=f"show_available:{prop_code}")
+    ]]
+    return alert_text, InlineKeyboardMarkup(keyboard)
+
+def format_checkout_reminder_alert(guest_name: str, property_code: str, checkout_date: str) -> str:
+    """Formats the high-priority reminder for a relocated guest's checkout."""
+    return (
+        f"‼️ *HIGH PRIORITY REMINDER* ‼️\n\n"
+        f"A relocated guest, *{guest_name}*, is scheduled to check out from property `{property_code}` tomorrow, *{checkout_date}*.\n\n"
+        f"Please ensure you **add `{property_code}` to tomorrow's cleaning list**."
+    )
+
+def format_relocation_history(relocations: list) -> str:
+    if not relocations:
+        return "✅ No relocation history found."
+    message = ["📖 *Recent Relocation History:*\n"]
+    for r in relocations:
+        date_str = r.relocated_at.strftime('%Y-%m-%d')
+        message.append(f"- `{date_str}`: *{r.guest_name}* was moved from `{r.original_property_code}` to `{r.new_property_code}`.")
+    return "\n".join(message)
+
+def format_daily_briefing(time_of_day: str, occupied: int, pending_cleaning: int, maintenance: int, available: int) -> str:
+    """Formats the proactive daily status report."""
+    from datetime import datetime
+    readable_date = datetime.now().strftime('%B %d, %Y')
+    
+    return (
+        f"*{time_of_day} Briefing - {readable_date}*\n\n"
+        f"Here is the current operational status:\n"
+        f"➡️ Occupied: `{occupied}`\n"
+        f"⏳ Pending Cleaning: `{pending_cleaning}`\n"
+        f"🛠️ Maintenance: `{maintenance}`\n"
+        f"✅ Available: `{available}`"
+    )
+
+def format_cleaning_list_receipt(success_codes: list, warnings: list) -> str:
+    """Formats the detailed receipt after processing a cleaning list."""
+    message = ["✅ *Cleaning List Processed*"]
+    
+    if success_codes:
+        message.append(f"\nThe following {len(success_codes)} properties were correctly marked as `PENDING_CLEANING`:")
+        message.append(f"`{', '.join(sorted(success_codes))}`")
+    else:
+        message.append("\nNo properties were updated.")
+
+    if warnings:
+        message.append("\n\n⚠️ *Warnings (These were NOT processed):*")
+        for warning in warnings:
+            message.append(f"  - {warning}")
+            
+    return "\n".join(message)
+
+def format_invalid_code_alert(invalid_code: str, original_message: str, suggestions: list = None) -> str:
+    """Formats an alert for an invalid property code, with optional suggestions."""
+    alert_text = (
+        f"❓ *Invalid Property Code Detected*\n\n"
+        f"An operation was attempted for property code `{invalid_code}`, but this code does not exist in the database.\n\n"
+    )
+    if suggestions:
+        alert_text += f"*Did you mean one of these?* `{', '.join(suggestions)}`\n\n"
+    
+    alert_text += f"The original message was:\n`{original_message}`\n\nPlease check for a typo and re-submit."
+    return alert_text

@@ -30,6 +30,9 @@ TELEGRAM_TOPIC_IDS = {
     "ISSUES": 2,
 }
 
+# --- Application Settings ---
+TIMEZONE = "Europe/Budapest"
+
 # --- Validation ---
 if not all([
     TELEGRAM_BOT_TOKEN, 

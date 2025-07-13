@@ -1,20 +1,17 @@
-# FILE: main.py
-# ==============================================================================
-# FINAL VERSION: Corrected the NameError by including all function definitions.
-# ==============================================================================
-
 import datetime
 import re
 import asyncio
 import time
 from contextlib import asynccontextmanager
+from difflib import get_close_matches
 from fastapi import FastAPI, Request, Response
 from sqlalchemy.orm import Session, joinedload
 from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
 from slack_bolt.async_app import AsyncApp
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
 import config
 import telegram_client
@@ -25,11 +22,15 @@ from database import get_db, engine
 # --- Database Initialization ---
 models.Base.metadata.create_all(bind=engine)
 
-# --- Application Instances ---
+# --- Application Instances & Persistent Scheduler ---
+jobstores = {
+    'default': SQLAlchemyJobStore(url=config.DATABASE_URL)
+}
+scheduler = AsyncIOScheduler(jobstores=jobstores, timezone=config.TIMEZONE)
+
 slack_app = AsyncApp(token=config.SLACK_BOT_TOKEN, signing_secret=config.SLACK_SIGNING_SECRET)
 telegram_app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
 slack_handler = AsyncSlackRequestHandler(slack_app)
-scheduler = AsyncIOScheduler(timezone="UTC")
 
 # --- DYNAMIC HELP COMMAND MANUAL ---
 COMMANDS_HELP_MANUAL = {
@@ -42,17 +43,32 @@ COMMANDS_HELP_MANUAL = {
     "set_clean": {"description": "Manually mark a property as clean and available.", "example": "/set_clean D2"},
     "cancel_booking": {"description": "Cancel an active booking and make the property available.", "example": "/cancel_booking A1"},
     "edit_booking": {"description": "Edit details of an active booking (guest_name, due_payment, platform).", "example": "/edit_booking K4 guest_name Maria Garcia-Lopez"},
-    "relocate": {"description": "Resolve an overbooking by moving a guest to an available room.", "example": "/relocate B3 A9"},
+    "relocate": {"description": "Move a guest pending relocation and set their checkout date.", "example": "/relocate A1 A2 2025-07-20"},
     "log_issue": {"description": "Log a new maintenance issue for a property.", "example": "/log_issue C5 Shower drain is clogged"},
     "block_property": {"description": "Block a property for maintenance.", "example": "/block_property G2 Repainting walls"},
     "unblock_property": {"description": "Unblock a property and make it available.", "example": "/unblock_property G2"},
     "booking_history": {"description": "Show the last 5 bookings for a property.", "example": "/booking_history A1"},
     "find_guest": {"description": "Find which property a guest is staying in.", "example": "/find_guest Smith"},
     "daily_revenue": {"description": "Calculate estimated revenue for a given date (defaults to today).", "example": "/daily_revenue 2025-07-13"},
+    "relocations": {"description": "Show a history of recent guest relocations.", "example": "/relocations or /relocations A1"},
     "help": {"description": "Show this help manual.", "example": "/help"}
 }
 
-# --- Scheduled Task ---
+# --- Scheduled Tasks ---
+async def daily_briefing_task(bot: Bot, time_of_day: str):
+    """Queries the DB and sends the morning/evening briefing."""
+    print(f"Running {time_of_day} briefing...")
+    db = next(get_db())
+    try:
+        occupied = db.query(models.Property).filter(models.Property.status == "OCCUPIED").count()
+        pending = db.query(models.Property).filter(models.Property.status == "PENDING_CLEANING").count()
+        maintenance = db.query(models.Property).filter(models.Property.status == "MAINTENANCE").count()
+        available = db.query(models.Property).filter(models.Property.status == "AVAILABLE").count()
+        report = telegram_client.format_daily_briefing(time_of_day, occupied, pending, maintenance, available)
+        await telegram_client.send_telegram_message(bot, report, topic_name="GENERAL")
+    finally:
+        db.close()
+
 async def daily_midnight_task():
     db = next(get_db())
     bot = telegram_app.bot
@@ -93,7 +109,11 @@ async def process_slack_message(payload: dict):
         print(f"MESSAGE RECEIVED from {user_id} in channel {channel_id}: {message_text[:50]}...")
         bot = telegram_app.bot
         
+        # Get all valid property codes once for typo checking
+        all_prop_codes = [p.code for p in db.query(models.Property.code).all()]
+
         if "great reset" in message_text.lower():
+            db.query(models.Relocation).delete()
             db.query(models.Issue).delete()
             db.query(models.Booking).delete()
             db.query(models.Property).delete()
@@ -114,24 +134,35 @@ async def process_slack_message(payload: dict):
             for booking_data in new_bookings_data:
                 prop_code = booking_data["property_code"]
                 if prop_code == "UNKNOWN": continue
+
+                if prop_code not in all_prop_codes:
+                    suggestions = get_close_matches(prop_code, all_prop_codes, n=3, cutoff=0.7)
+                    original_line = next((line for line in message_text.split('\n') if line.strip().startswith(prop_code)), message_text)
+                    alert_text = telegram_client.format_invalid_code_alert(prop_code, original_line, suggestions)
+                    await telegram_client.send_telegram_message(bot, alert_text, topic_name="ISSUES")
+                    continue
+
                 prop = db.query(models.Property).filter(models.Property.code == prop_code).first()
                 if not prop or prop.status != "AVAILABLE":
-                    existing_guest = None
-                    prop_status = prop.status if prop else "NOT_FOUND"
-                    if prop_status == "OCCUPIED":
-                        active_booking = db.query(models.Booking).filter(models.Booking.property_id == prop.id, models.Booking.status == "Active").order_by(models.Booking.id.desc()).first()
-                        if active_booking: existing_guest = active_booking.guest_name
-                    booking_data['status'] = "PENDING_RELOCATION"
-                    failed_booking = models.Booking(**booking_data)
-                    db.add(failed_booking)
-                    alert_text, reply_markup = telegram_client.format_checkin_error_alert(
-                        property_code=prop_code,
-                        new_guest=booking_data["guest_name"],
-                        prop_status=prop_status,
-                        existing_guest=existing_guest,
-                        maintenance_notes=prop.notes if prop else None
-                    )
-                    await telegram_client.send_telegram_message(bot, alert_text, topic_name="ISSUES", reply_markup=reply_markup)
+                    if prop and prop.status == "OCCUPIED":
+                        first_booking = db.query(models.Booking).filter(models.Booking.property_id == prop.id, models.Booking.status == "Active").order_by(models.Booking.id.desc()).first()
+                        booking_data['status'] = "PENDING_RELOCATION"
+                        second_booking = models.Booking(**booking_data, property_id=prop.id)
+                        db.add(second_booking)
+                        db.commit()
+                        alert_text, reply_markup = telegram_client.format_conflict_alert(prop_code, first_booking, second_booking)
+                        await telegram_client.send_telegram_message(bot, alert_text, topic_name="ISSUES", reply_markup=reply_markup)
+                    else:
+                        prop_status = prop.status if prop else "NOT_FOUND"
+                        booking_data['status'] = "PENDING_RELOCATION"
+                        failed_booking = models.Booking(**booking_data)
+                        db.add(failed_booking)
+                        db.commit()
+                        alert_text, reply_markup = telegram_client.format_checkin_error_alert(
+                            property_code=prop_code, new_guest=booking_data["guest_name"], prop_status=prop_status,
+                            maintenance_notes=prop.notes if prop else None
+                        )
+                        await telegram_client.send_telegram_message(bot, alert_text, topic_name="ISSUES", reply_markup=reply_markup)
                     continue
                 prop.status = "OCCUPIED"
                 db_booking = models.Booking(property_id=prop.id, **booking_data)
@@ -144,22 +175,28 @@ async def process_slack_message(payload: dict):
                 await telegram_client.send_telegram_message(bot, summary_text, topic_name="GENERAL")
 
         elif channel_id == config.SLACK_CLEANING_CHANNEL_ID:
-            checkout_date_for_cleaning_list = (datetime.date.fromisoformat(list_date_str) + datetime.timedelta(days=1)).isoformat()
-            properties_to_clean = await slack_parser.parse_cleaning_list_with_ai(message_text)
-            processed_for_cleaning = []
-            for prop_code in properties_to_clean:
+            properties_to_process = await slack_parser.parse_cleaning_list_with_ai(message_text)
+            success_codes = []
+            warnings = []
+            for prop_code in properties_to_process:
+                if prop_code not in all_prop_codes:
+                    warnings.append(f"`{prop_code}`: Code not found in database (check for typo).")
+                    continue
+                
                 prop = db.query(models.Property).filter(models.Property.code == prop_code).first()
-                if prop and prop.status == "OCCUPIED":
+                if prop.status == "OCCUPIED":
                     prop.status = "PENDING_CLEANING"
-                    processed_for_cleaning.append(prop.code)
+                    success_codes.append(prop.code)
                     booking_to_update = db.query(models.Booking).filter(models.Booking.property_id == prop.id, models.Booking.status == "Active").order_by(models.Booking.id.desc()).first()
                     if booking_to_update:
-                        booking_to_update.checkout_date = checkout_date_for_cleaning_list
+                        booking_to_update.checkout_date = (datetime.date.fromisoformat(list_date_str) + datetime.timedelta(days=1)).isoformat()
                         booking_to_update.status = "Departed"
+                else:
+                    warnings.append(f"`{prop_code}`: Not processed, status was already `{prop.status}`.")
+            
             db.commit()
-            if processed_for_cleaning:
-                summary_text = telegram_client.format_daily_list_summary([], [], sorted(processed_for_cleaning), list_date_str)
-                await telegram_client.send_telegram_message(bot, summary_text, topic_name="GENERAL")
+            receipt_message = telegram_client.format_cleaning_list_receipt(success_codes, warnings)
+            await telegram_client.send_telegram_message(bot, receipt_message, topic_name="GENERAL")
     finally:
         db.close()
 
@@ -266,26 +303,48 @@ async def set_clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.close()
 
 async def relocate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) != 2:
-        await update.message.reply_text("Usage: `/relocate [FROM_CODE] [TO_CODE]`")
+    if len(context.args) != 3:
+        await update.message.reply_text("Usage: `/relocate [FROM_CODE] [TO_CODE] [YYYY-MM-DD]`")
         return
     db = next(get_db())
     try:
-        from_code, to_code = context.args[0].upper(), context.args[1].upper()
+        from_code, to_code, checkout_date_str = context.args[0].upper(), context.args[1].upper(), context.args[2]
+        try:
+            checkout_date = datetime.date.fromisoformat(checkout_date_str)
+        except ValueError:
+            await update.message.reply_text("❌ Error: Invalid date format. Please use `YYYY-MM-DD`.")
+            return
         to_prop = db.query(models.Property).filter(models.Property.code == to_code).first()
         if not to_prop or to_prop.status != "AVAILABLE":
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Error: Property `{to_code}` is not available for relocation.", parse_mode='Markdown')
-            return
-        booking_to_relocate = db.query(models.Booking).filter(models.Booking.property_code == from_code, models.Booking.status == "PENDING_RELOCATION").order_by(models.Booking.id.desc()).first()
-        if not booking_to_relocate:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Error: No booking found pending relocation for `{from_code}`.", parse_mode='Markdown')
-            return
-        to_prop.status = "OCCUPIED"
-        booking_to_relocate.status = "Active"
-        booking_to_relocate.property_id = to_prop.id
-        booking_to_relocate.property_code = to_prop.code
-        db.commit()
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ *Relocation Successful!*\nGuest *{booking_to_relocate.guest_name}* has been moved to `{to_code}`.", parse_mode='Markdown')
+            report = telegram_client.format_simple_error(f"Property `{to_code}` is not available for relocation.")
+        else:
+            booking_to_relocate = db.query(models.Booking).filter(models.Booking.property_code == from_code, models.Booking.status == "PENDING_RELOCATION").order_by(models.Booking.id.desc()).first()
+            if not booking_to_relocate:
+                report = telegram_client.format_simple_error(f"No booking found pending relocation for `{from_code}`.")
+            else:
+                log_entry = models.Relocation(
+                    booking_id=booking_to_relocate.id, guest_name=booking_to_relocate.guest_name,
+                    original_property_code=from_code, new_property_code=to_code
+                )
+                db.add(log_entry)
+                to_prop.status = "OCCUPIED"
+                booking_to_relocate.status = "Active"
+                booking_to_relocate.property_id = to_prop.id
+                booking_to_relocate.property_code = to_prop.code
+                booking_to_relocate.checkout_date = checkout_date
+                reminder_datetime = datetime.datetime.combine(checkout_date - datetime.timedelta(days=1), datetime.time(18, 0))
+                scheduler.add_job(
+                    send_checkout_reminder, 'date', run_date=reminder_datetime,
+                    args=[context.bot, booking_to_relocate.guest_name, to_code, checkout_date_str],
+                    id=f"checkout_reminder_{booking_to_relocate.id}", replace_existing=True
+                )
+                db.commit()
+                report = telegram_client.format_simple_success(
+                    f"Relocation Successful!\n"
+                    f"Guest *{booking_to_relocate.guest_name}* has been moved to `{to_code}`.\n"
+                    f"A checkout reminder has been scheduled for *{reminder_datetime.strftime('%Y-%m-%d %H:%M')}*."
+                )
+        await update.message.reply_text(report, parse_mode='Markdown')
     finally:
         db.close()
 
@@ -455,16 +514,50 @@ async def daily_revenue_command(update: Update, context: ContextTypes.DEFAULT_TY
     finally:
         db.close()
 
+async def relocations_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    db = next(get_db())
+    try:
+        query = db.query(models.Relocation).order_by(models.Relocation.relocated_at.desc())
+        if context.args:
+            prop_code = context.args[0].upper()
+            query = query.filter((models.Relocation.original_property_code == prop_code) | (models.Relocation.new_property_code == prop_code))
+        history = query.limit(10).all()
+        report = telegram_client.format_relocation_history(history)
+        await update.message.reply_text(report, parse_mode='Markdown')
+    finally:
+        db.close()
+
 async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    action, data = query.data.split(":")
+    action, *data = query.data.split(":")
     if action == "show_available":
         db = next(get_db())
         try:
             props = db.query(models.Property).filter(models.Property.status == "AVAILABLE").order_by(models.Property.code).all()
-            report = telegram_client.format_available_list(props, for_relocation_from=data)
+            report = telegram_client.format_available_list(props, for_relocation_from=data[0])
             await query.edit_message_text(text=f"{query.message.text}\n\n{report}", parse_mode='Markdown')
+        finally:
+            db.close()
+    elif action == "swap_relocation":
+        db = next(get_db())
+        try:
+            first_booking_id, second_booking_id = data[0], data[1]
+            first_booking = db.query(models.Booking).filter(models.Booking.id == first_booking_id).first()
+            second_booking = db.query(models.Booking).filter(models.Booking.id == second_booking_id).first()
+            if not first_booking or not second_booking:
+                await query.edit_message_text(text=f"{query.message.text}\n\n❌ Error: Could not find original bookings to swap.", parse_mode='Markdown')
+                return
+            first_booking.status = "PENDING_RELOCATION"
+            second_booking.status = "Active"
+            db.commit()
+            new_text = (
+                f"✅ *Swap Successful!*\n\n"
+                f"*{second_booking.guest_name}* is now the active guest in `{second_booking.property_code}`.\n"
+                f"*{first_booking.guest_name}* is now pending relocation.\n\n"
+                f"To resolve, use `/relocate {first_booking.property_code} [new_room] [YYYY-MM-DD]`."
+            )
+            await query.edit_message_text(text=new_text, parse_mode='Markdown')
         finally:
             db.close()
 
@@ -486,13 +579,16 @@ telegram_app.add_handler(CommandHandler("unblock_property", unblock_property_com
 telegram_app.add_handler(CommandHandler("booking_history", booking_history_command))
 telegram_app.add_handler(CommandHandler("find_guest", find_guest_command))
 telegram_app.add_handler(CommandHandler("daily_revenue", daily_revenue_command))
+telegram_app.add_handler(CommandHandler("relocations", relocations_command))
 telegram_app.add_handler(CallbackQueryHandler(button_callback_handler))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5)
+    scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, timezone='UTC')
+    scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=[telegram_app.bot, "Morning"])
+    scheduler.add_job(daily_briefing_task, 'cron', hour=22, minute=0, args=[telegram_app.bot, "Evening"])
     scheduler.start()
-    print("APScheduler started, daily midnight task scheduled.")
+    print("APScheduler started with all tasks scheduled.")
     await telegram_app.initialize()
     await telegram_app.start()
     webhook_url = f"{config.WEBHOOK_URL}/telegram/webhook"

@@ -41,3 +41,13 @@ class Issue(Base):
     is_resolved = Column(String(10), default="No", nullable=False)
 
     property = relationship("Property", back_populates="issues")
+
+class Relocation(Base):
+    __tablename__ = "relocations"
+    id = Column(Integer, primary_key=True, index=True)
+    booking_id = Column(Integer, ForeignKey("bookings.id"), nullable=False)
+    guest_name = Column(String(255), nullable=False)
+    original_property_code = Column(String(10), nullable=False)
+    new_property_code = Column(String(10), nullable=False)
+    relocated_at = Column(DateTime(timezone=True), server_default=func.now())
+    booking = relationship("Booking")
