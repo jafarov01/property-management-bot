@@ -1,3 +1,8 @@
+# FILE: main.py
+# ==============================================================================
+# FINAL VERSION: Fixed the PicklingError for the persistent scheduler.
+# ==============================================================================
+
 import datetime
 import re
 import asyncio
@@ -55,9 +60,17 @@ COMMANDS_HELP_MANUAL = {
 }
 
 # --- Scheduled Tasks ---
-async def daily_briefing_task(bot: Bot, time_of_day: str):
-    """Queries the DB and sends the morning/evening briefing."""
+async def send_checkout_reminder(guest_name: str, property_code: str, checkout_date: str):
+    """Sends the high-priority checkout reminder. Gets the bot object itself."""
+    bot = telegram_app.bot
+    report = telegram_client.format_checkout_reminder_alert(guest_name, property_code, checkout_date)
+    await telegram_client.send_telegram_message(bot, report, topic_name="ISSUES")
+    print(f"Sent checkout reminder for {guest_name} in {property_code}.")
+
+async def daily_briefing_task(time_of_day: str):
+    """Queries the DB and sends the morning/evening briefing. Gets the bot object itself."""
     print(f"Running {time_of_day} briefing...")
+    bot = telegram_app.bot
     db = next(get_db())
     try:
         occupied = db.query(models.Property).filter(models.Property.status == "OCCUPIED").count()
@@ -109,7 +122,6 @@ async def process_slack_message(payload: dict):
         print(f"MESSAGE RECEIVED from {user_id} in channel {channel_id}: {message_text[:50]}...")
         bot = telegram_app.bot
         
-        # Get all valid property codes once for typo checking
         all_prop_codes = [p.code for p in db.query(models.Property.code).all()]
 
         if "great reset" in message_text.lower():
@@ -335,7 +347,7 @@ async def relocate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reminder_datetime = datetime.datetime.combine(checkout_date - datetime.timedelta(days=1), datetime.time(18, 0))
                 scheduler.add_job(
                     send_checkout_reminder, 'date', run_date=reminder_datetime,
-                    args=[context.bot, booking_to_relocate.guest_name, to_code, checkout_date_str],
+                    args=[booking_to_relocate.guest_name, to_code, checkout_date_str],
                     id=f"checkout_reminder_{booking_to_relocate.id}", replace_existing=True
                 )
                 db.commit()
@@ -585,8 +597,8 @@ telegram_app.add_handler(CallbackQueryHandler(button_callback_handler))
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, timezone='UTC')
-    scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=[telegram_app.bot, "Morning"])
-    scheduler.add_job(daily_briefing_task, 'cron', hour=22, minute=0, args=[telegram_app.bot, "Evening"])
+    scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"])
+    scheduler.add_job(daily_briefing_task, 'cron', hour=22, minute=0, args=["Evening"])
     scheduler.start()
     print("APScheduler started with all tasks scheduled.")
     await telegram_app.initialize()
