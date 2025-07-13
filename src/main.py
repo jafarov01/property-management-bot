@@ -1,6 +1,6 @@
 # FILE: main.py
 # ==============================================================================
-# FINAL VERSION: Fixed the PicklingError for the persistent scheduler.
+# UPDATED: Added a /rename_property command to safely fix data entry errors.
 # ==============================================================================
 
 import datetime
@@ -41,6 +41,7 @@ slack_handler = AsyncSlackRequestHandler(slack_app)
 COMMANDS_HELP_MANUAL = {
     "status": {"description": "Get a full summary of all property statuses.", "example": "/status"},
     "check": {"description": "Get a detailed status report for a single property.", "example": "/check A1"},
+    "rename_property": {"description": "Correct a property's code in the database.", "example": "/rename_property C7 C8"},
     "available": {"description": "List all properties that are clean and available.", "example": "/available"},
     "occupied": {"description": "List all properties that are currently occupied.", "example": "/occupied"},
     "pending_cleaning": {"description": "List all properties waiting to be cleaned.", "example": "/pending_cleaning"},
@@ -314,6 +315,36 @@ async def set_clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         db.close()
 
+async def rename_property_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) != 2:
+        await update.message.reply_text("Usage: `/rename_property [OLD_CODE] [NEW_CODE]`")
+        return
+    db = next(get_db())
+    try:
+        old_code, new_code = context.args[0].upper(), context.args[1].upper()
+        
+        # Check if the new code already exists to prevent unique constraint errors
+        if db.query(models.Property).filter(models.Property.code == new_code).first():
+            report = telegram_client.format_simple_error(f"Cannot rename: Property `{new_code}` already exists.")
+            await update.message.reply_text(report, parse_mode='Markdown')
+            return
+
+        prop_to_rename = db.query(models.Property).filter(models.Property.code == old_code).first()
+        if not prop_to_rename:
+            report = telegram_client.format_simple_error(f"Property `{old_code}` not found.")
+        else:
+            # Update property code
+            prop_to_rename.code = new_code
+            
+            # Update all associated booking records
+            db.query(models.Booking).filter(models.Booking.property_code == old_code).update({"property_code": new_code})
+            
+            db.commit()
+            report = telegram_client.format_simple_success(f"Property `{old_code}` has been successfully renamed to `{new_code}`.")
+        await update.message.reply_text(report, parse_mode='Markdown')
+    finally:
+        db.close()
+
 async def relocate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 3:
         await update.message.reply_text("Usage: `/relocate [FROM_CODE] [TO_CODE] [YYYY-MM-DD]`")
@@ -581,6 +612,7 @@ telegram_app.add_handler(CommandHandler("occupied", occupied_command))
 telegram_app.add_handler(CommandHandler("available", available_command))
 telegram_app.add_handler(CommandHandler("pending_cleaning", pending_cleaning_command))
 telegram_app.add_handler(CommandHandler("relocate", relocate_command))
+telegram_app.add_handler(CommandHandler("rename_property", rename_property_command))
 telegram_app.add_handler(CommandHandler("set_clean", set_clean_command))
 telegram_app.add_handler(CommandHandler("early_checkout", early_checkout_command))
 telegram_app.add_handler(CommandHandler("cancel_booking", cancel_booking_command))
