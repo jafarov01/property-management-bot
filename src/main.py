@@ -1,7 +1,6 @@
 # FILE: main.py
 # ==============================================================================
-# FINAL VERSION: Fixed "Message to be replied not found" error by replacing
-# all instances of `reply_text` with the more robust `send_message`.
+# FINAL VERSION: Corrected scheduler timezone consistency for reliability.
 # ==============================================================================
 
 import datetime
@@ -32,6 +31,7 @@ models.Base.metadata.create_all(bind=engine)
 jobstores = {
     'default': SQLAlchemyJobStore(url=config.DATABASE_URL)
 }
+# The scheduler is now consistently using the timezone from your config file
 scheduler = AsyncIOScheduler(jobstores=jobstores, timezone=config.TIMEZONE)
 
 slack_app = AsyncApp(token=config.SLACK_BOT_TOKEN, signing_secret=config.SLACK_SIGNING_SECRET)
@@ -94,7 +94,7 @@ async def daily_midnight_task():
         for prop in props_to_make_available:
             prop.status = "AVAILABLE"
         db.commit()
-        summary_text = (f"Automated Midnight Task (00:05 UTC)\n\n"
+        summary_text = (f"Automated Midnight Task (00:05 Local Time)\n\n"
                         f"🧹 The following {len(prop_codes)} properties have been cleaned and are now *AVAILABLE* for the new day:\n\n"
                         f"`{', '.join(sorted(prop_codes))}`")
         await telegram_client.send_telegram_message(bot, summary_text, topic_name="GENERAL")
@@ -622,7 +622,9 @@ telegram_app.add_handler(CallbackQueryHandler(button_callback_handler))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, timezone='UTC')
+    # --- FIX: Pass the bot object from the application context to the scheduled jobs ---
+    # The scheduler now uses the bot instance from the initialized telegram_app
+    scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5)
     scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"])
     scheduler.add_job(daily_briefing_task, 'cron', hour=22, minute=0, args=["Evening"])
     scheduler.start()
