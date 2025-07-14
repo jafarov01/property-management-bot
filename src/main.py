@@ -1,6 +1,7 @@
 # FILE: main.py
 # ==============================================================================
-# FINAL VERSION: Corrected scheduler timezone consistency for reliability.
+# FINAL VERSION: Added a global error handler to the Slack message processor
+# to prevent server crashes and provide detailed logging.
 # ==============================================================================
 
 import datetime
@@ -31,7 +32,6 @@ models.Base.metadata.create_all(bind=engine)
 jobstores = {
     'default': SQLAlchemyJobStore(url=config.DATABASE_URL)
 }
-# The scheduler is now consistently using the timezone from your config file
 scheduler = AsyncIOScheduler(jobstores=jobstores, timezone=config.TIMEZONE)
 
 slack_app = AsyncApp(token=config.SLACK_BOT_TOKEN, signing_secret=config.SLACK_SIGNING_SECRET)
@@ -107,110 +107,127 @@ async def daily_midnight_task():
 
 # --- Core Logic Functions (Slack) ---
 async def process_slack_message(payload: dict):
-    db = next(get_db())
+    # --- NEW: Global "Safety Net" Error Handler ---
     try:
-        event = payload.get("event", {})
-        user_id = event.get('user')
-        if user_id != config.SLACK_USER_ID_OF_LIST_POSTER: return
+        db = next(get_db())
+        try:
+            event = payload.get("event", {})
+            user_id = event.get('user')
+            if user_id != config.SLACK_USER_ID_OF_LIST_POSTER: return
 
-        message_text = event.get('text', '')
-        channel_id = event.get('channel')
-        
-        message_ts = float(event.get('ts', time.time()))
-        list_date_str = datetime.date.fromtimestamp(message_ts).isoformat()
-
-        print(f"MESSAGE RECEIVED from {user_id} in channel {channel_id}: {message_text[:50]}...")
-        bot = telegram_app.bot
-        
-        all_prop_codes = [p.code for p in db.query(models.Property.code).all()]
-
-        if "great reset" in message_text.lower():
-            db.query(models.Relocation).delete()
-            db.query(models.Issue).delete()
-            db.query(models.Booking).delete()
-            db.query(models.Property).delete()
-            db.commit()
-            properties_to_seed = await slack_parser.parse_cleaning_list_with_ai(message_text)
-            count = 0
-            for prop_code in properties_to_seed:
-                if prop_code and prop_code != "N/A" and not db.query(models.Property).filter(models.Property.code == prop_code).first():
-                    db.add(models.Property(code=prop_code, status="AVAILABLE"))
-                    count += 1
-            db.commit()
-            await telegram_client.send_telegram_message(bot, f"✅ *System Initialized*\n\nSuccessfully seeded the database with `{count}` properties.", topic_name="GENERAL")
-            return
-
-        if channel_id == config.SLACK_CHECKIN_CHANNEL_ID:
-            new_bookings_data = await slack_parser.parse_checkin_list_with_ai(message_text, list_date_str)
-            processed_bookings = []
-            for booking_data in new_bookings_data:
-                prop_code = booking_data["property_code"]
-                if prop_code == "UNKNOWN": continue
-
-                if prop_code not in all_prop_codes:
-                    suggestions = get_close_matches(prop_code, all_prop_codes, n=3, cutoff=0.7)
-                    original_line = next((line for line in message_text.split('\n') if line.strip().startswith(prop_code)), message_text)
-                    alert_text = telegram_client.format_invalid_code_alert(prop_code, original_line, suggestions)
-                    await telegram_client.send_telegram_message(bot, alert_text, topic_name="ISSUES")
-                    continue
-
-                prop = db.query(models.Property).filter(models.Property.code == prop_code).first()
-                if not prop or prop.status != "AVAILABLE":
-                    if prop and prop.status == "OCCUPIED":
-                        first_booking = db.query(models.Booking).filter(models.Booking.property_id == prop.id, models.Booking.status == "Active").order_by(models.Booking.id.desc()).first()
-                        booking_data['status'] = "PENDING_RELOCATION"
-                        second_booking = models.Booking(**booking_data, property_id=prop.id)
-                        db.add(second_booking)
-                        db.commit()
-                        alert_text, reply_markup = telegram_client.format_conflict_alert(prop_code, first_booking, second_booking)
-                        await telegram_client.send_telegram_message(bot, alert_text, topic_name="ISSUES", reply_markup=reply_markup)
-                    else:
-                        prop_status = prop.status if prop else "NOT_FOUND"
-                        booking_data['status'] = "PENDING_RELOCATION"
-                        failed_booking = models.Booking(**booking_data)
-                        db.add(failed_booking)
-                        db.commit()
-                        alert_text, reply_markup = telegram_client.format_checkin_error_alert(
-                            property_code=prop_code, new_guest=booking_data["guest_name"], prop_status=prop_status,
-                            maintenance_notes=prop.notes if prop else None
-                        )
-                        await telegram_client.send_telegram_message(bot, alert_text, topic_name="ISSUES", reply_markup=reply_markup)
-                    continue
-                prop.status = "OCCUPIED"
-                db_booking = models.Booking(property_id=prop.id, **booking_data)
-                db.add(db_booking)
-                db.flush()
-                processed_bookings.append(db_booking)
-            db.commit()
-            if processed_bookings:
-                summary_text = telegram_client.format_daily_list_summary(processed_bookings, [], [], list_date_str)
-                await telegram_client.send_telegram_message(bot, summary_text, topic_name="GENERAL")
-
-        elif channel_id == config.SLACK_CLEANING_CHANNEL_ID:
-            properties_to_process = await slack_parser.parse_cleaning_list_with_ai(message_text)
-            success_codes = []
-            warnings = []
-            for prop_code in properties_to_process:
-                if prop_code not in all_prop_codes:
-                    warnings.append(f"`{prop_code}`: Code not found in database (check for typo).")
-                    continue
-                
-                prop = db.query(models.Property).filter(models.Property.code == prop_code).first()
-                if prop.status == "OCCUPIED":
-                    prop.status = "PENDING_CLEANING"
-                    success_codes.append(prop.code)
-                    booking_to_update = db.query(models.Booking).filter(models.Booking.property_id == prop.id, models.Booking.status == "Active").order_by(models.Booking.id.desc()).first()
-                    if booking_to_update:
-                        booking_to_update.checkout_date = (datetime.date.fromisoformat(list_date_str) + datetime.timedelta(days=1)).isoformat()
-                        booking_to_update.status = "Departed"
-                else:
-                    warnings.append(f"`{prop_code}`: Not processed, status was already `{prop.status}`.")
+            message_text = event.get('text', '')
+            channel_id = event.get('channel')
             
-            db.commit()
-            receipt_message = telegram_client.format_cleaning_list_receipt(success_codes, warnings)
-            await telegram_client.send_telegram_message(bot, receipt_message, topic_name="GENERAL")
-    finally:
-        db.close()
+            message_ts = float(event.get('ts', time.time()))
+            list_date_str = datetime.date.fromtimestamp(message_ts).isoformat()
+
+            print(f"MESSAGE RECEIVED from {user_id} in channel {channel_id}: {message_text[:50]}...")
+            bot = telegram_app.bot
+            
+            all_prop_codes = [p.code for p in db.query(models.Property.code).all()]
+
+            if "great reset" in message_text.lower():
+                db.query(models.Relocation).delete()
+                db.query(models.Issue).delete()
+                db.query(models.Booking).delete()
+                db.query(models.Property).delete()
+                db.commit()
+                properties_to_seed = await slack_parser.parse_cleaning_list_with_ai(message_text)
+                count = 0
+                for prop_code in properties_to_seed:
+                    if prop_code and prop_code != "N/A" and not db.query(models.Property).filter(models.Property.code == prop_code).first():
+                        db.add(models.Property(code=prop_code, status="AVAILABLE"))
+                        count += 1
+                db.commit()
+                await telegram_client.send_telegram_message(bot, f"✅ *System Initialized*\n\nSuccessfully seeded the database with `{count}` properties.", topic_name="GENERAL")
+                return
+
+            if channel_id == config.SLACK_CHECKIN_CHANNEL_ID:
+                new_bookings_data = await slack_parser.parse_checkin_list_with_ai(message_text, list_date_str)
+                processed_bookings = []
+                for booking_data in new_bookings_data:
+                    prop_code = booking_data["property_code"]
+                    guest_name = booking_data["guest_name"]
+
+                    if guest_name in ["N/A", "Unknown Guest"]:
+                        print(f"Skipping booking for {prop_code} due to missing guest name.")
+                        continue
+
+                    if prop_code == "UNKNOWN": continue
+
+                    if prop_code not in all_prop_codes:
+                        suggestions = get_close_matches(prop_code, all_prop_codes, n=3, cutoff=0.7)
+                        original_line = next((line for line in message_text.split('\n') if line.strip().startswith(prop_code)), message_text)
+                        alert_text = telegram_client.format_invalid_code_alert(prop_code, original_line, suggestions)
+                        await telegram_client.send_telegram_message(bot, alert_text, topic_name="ISSUES")
+                        continue
+
+                    prop = db.query(models.Property).filter(models.Property.code == prop_code).first()
+                    if not prop or prop.status != "AVAILABLE":
+                        if prop and prop.status == "OCCUPIED":
+                            first_booking = db.query(models.Booking).filter(models.Booking.property_id == prop.id, models.Booking.status == "Active").order_by(models.Booking.id.desc()).first()
+                            booking_data['status'] = "PENDING_RELOCATION"
+                            second_booking = models.Booking(**booking_data, property_id=prop.id)
+                            db.add(second_booking)
+                            db.commit()
+                            alert_text, reply_markup = telegram_client.format_conflict_alert(prop_code, first_booking, second_booking)
+                            await telegram_client.send_telegram_message(bot, alert_text, topic_name="ISSUES", reply_markup=reply_markup)
+                        else:
+                            prop_status = prop.status if prop else "NOT_FOUND"
+                            booking_data['status'] = "PENDING_RELOCATION"
+                            failed_booking = models.Booking(**booking_data)
+                            db.add(failed_booking)
+                            db.commit()
+                            alert_text, reply_markup = telegram_client.format_checkin_error_alert(
+                                property_code=prop_code, new_guest=booking_data["guest_name"], prop_status=prop_status,
+                                maintenance_notes=prop.notes if prop else None
+                            )
+                            await telegram_client.send_telegram_message(bot, alert_text, topic_name="ISSUES", reply_markup=reply_markup)
+                        continue
+                    prop.status = "OCCUPIED"
+                    db_booking = models.Booking(property_id=prop.id, **booking_data)
+                    db.add(db_booking)
+                    db.flush()
+                    processed_bookings.append(db_booking)
+                db.commit()
+                if processed_bookings:
+                    summary_text = telegram_client.format_daily_list_summary(processed_bookings, [], [], list_date_str)
+                    await telegram_client.send_telegram_message(bot, summary_text, topic_name="GENERAL")
+
+            elif channel_id == config.SLACK_CLEANING_CHANNEL_ID:
+                properties_to_process = await slack_parser.parse_cleaning_list_with_ai(message_text)
+                success_codes = []
+                warnings = []
+                for prop_code in properties_to_process:
+                    if prop_code not in all_prop_codes:
+                        warnings.append(f"`{prop_code}`: Code not found in database (check for typo).")
+                        continue
+                    
+                    prop = db.query(models.Property).filter(models.Property.code == prop_code).first()
+                    if prop.status == "OCCUPIED":
+                        prop.status = "PENDING_CLEANING"
+                        success_codes.append(prop.code)
+                        booking_to_update = db.query(models.Booking).filter(models.Booking.property_id == prop.id, models.Booking.status == "Active").order_by(models.Booking.id.desc()).first()
+                        if booking_to_update:
+                            booking_to_update.checkout_date = (datetime.date.fromisoformat(list_date_str) + datetime.timedelta(days=1)).isoformat()
+                            booking_to_update.status = "Departed"
+                    else:
+                        warnings.append(f"`{prop_code}`: Not processed, status was already `{prop.status}`.")
+                
+                db.commit()
+                receipt_message = telegram_client.format_cleaning_list_receipt(success_codes, warnings)
+                await telegram_client.send_telegram_message(bot, receipt_message, topic_name="GENERAL")
+        finally:
+            db.close()
+    except Exception as e:
+        # This will catch ANY error, log it for us to see, and prevent a server crash.
+        print(f"!!!!!! CRITICAL ERROR IN SLACK PROCESSOR !!!!!!")
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        # Optionally, send an alert to a super-admin channel
+        # await telegram_client.send_telegram_message(telegram_app.bot, f"Critical Error: {e}", topic_name="YOUR_ADMIN_TOPIC")
+
 
 # --- Register Slack Handler ---
 @slack_app.event("message")
@@ -622,8 +639,6 @@ telegram_app.add_handler(CallbackQueryHandler(button_callback_handler))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # --- FIX: Pass the bot object from the application context to the scheduled jobs ---
-    # The scheduler now uses the bot instance from the initialized telegram_app
     scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5)
     scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"])
     scheduler.add_job(daily_briefing_task, 'cron', hour=22, minute=0, args=["Evening"])
