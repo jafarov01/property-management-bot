@@ -1,6 +1,6 @@
 # FILE: telegram_client.py
 # ==============================================================================
-# UPDATED: The email notification format now includes the AI-generated summary.
+# UPDATED: The email notification format now includes the reservation number.
 # ==============================================================================
 
 import datetime
@@ -22,12 +22,13 @@ async def send_telegram_message(bot: telegram.Bot, text: str, topic_name: str = 
     )
 
 def format_email_notification(parsed_data: dict, alert_id: int) -> tuple:
-    """Formats a high-priority, interactive notification including a summary."""
+    """Formats a high-priority, interactive notification including a summary and reservation number."""
     category = parsed_data.get("category", "Uncategorized Email")
     guest = parsed_data.get("guest_name")
     prop = parsed_data.get("property_code")
     platform = parsed_data.get("platform")
-    summary = parsed_data.get("summary") # <-- New field
+    summary = parsed_data.get("summary")
+    reservation_number = parsed_data.get("reservation_number") # <-- New field
     
     title = f"‼️ *URGENT EMAIL: {category}* ‼️"
     platform_info = f"from *{platform or 'Unknown'}*"
@@ -39,6 +40,7 @@ def format_email_notification(parsed_data: dict, alert_id: int) -> tuple:
 
     details = []
     if guest: details.append(f"  - **Guest:** {guest}")
+    if reservation_number: details.append(f"  - **Reservation #:** `{reservation_number}`") # <-- New line
     if prop: details.append(f"  - **Property:** `{prop}`")
     
     if details:

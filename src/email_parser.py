@@ -1,7 +1,7 @@
 # FILE: email_parser.py
 # ==============================================================================
-# UPDATED: The AI prompt is now enhanced to extract a one-sentence summary
-# of the email's content for more context in alerts.
+# UPDATED: The AI prompt is now enhanced to specifically extract the
+# reservation number from emails.
 # ==============================================================================
 import imaplib
 import email
@@ -41,14 +41,18 @@ def get_email_body(msg):
     return None
 
 async def parse_booking_email_with_ai(email_body: str) -> Dict:
-    """Uses AI to parse email content, including a summary of the issue."""
+    """Uses AI to parse email content, including a summary and reservation number."""
     prompt = f"""
-    You are an expert data extraction and summarization system for a property management company.
+    You are an expert data extraction system for a property management company.
 
     **Instructions:**
     1.  Read the email and determine a short, descriptive `category` for its main purpose (e.g., "Guest Complaint", "New Booking", "Cancellation").
-    2.  **NEW:** Create a one-sentence `summary` of the core issue or message in the email.
-    3.  Extract the following details if they are present: `guest_name`, `property_code`, `platform`.
+    2.  Create a one-sentence `summary` of the core issue or message in the email.
+    3.  Extract the following details if they are present:
+        - `guest_name`
+        - `property_code`
+        - `platform` ("Airbnb" or "Booking.com")
+        - `reservation_number` (This is very important. Look for "reservation" or "booking number").
     4.  If a field is not present, use the value `null`.
     5.  You MUST return a single, valid JSON object.
 
@@ -61,7 +65,8 @@ async def parse_booking_email_with_ai(email_body: str) -> Dict:
         "summary": "Guest is complaining about blood stains in the sheets.",
         "guest_name": "Marta Miola",
         "property_code": null,
-        "platform": "Booking.com"
+        "platform": "Booking.com",
+        "reservation_number": "4488269885"
     }}
 
     ---
