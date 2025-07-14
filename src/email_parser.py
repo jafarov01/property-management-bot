@@ -1,7 +1,7 @@
 # FILE: email_parser.py
 # ==============================================================================
-# UPDATED: Implemented sender-based filtering to only process emails from
-# the specified forwarding address, ignoring all other messages.
+# UPDATED: The AI prompt is now enhanced to extract a one-sentence summary
+# of the email's content for more context in alerts.
 # ==============================================================================
 import imaplib
 import email
@@ -41,21 +41,28 @@ def get_email_body(msg):
     return None
 
 async def parse_booking_email_with_ai(email_body: str) -> Dict:
-    """Uses AI to parse email content and extract booking details with a dynamic category."""
+    """Uses AI to parse email content, including a summary of the issue."""
     prompt = f"""
-    You are an expert data extraction system for a property management company. Analyze the following email content from Airbnb or Booking.com.
+    You are an expert data extraction and summarization system for a property management company.
 
     **Instructions:**
-    1.  Read the email and determine a short, descriptive `category` for its main purpose. Pay close attention to keywords in the subject like "Booking disruption", "Service issue", "Important update", "can't accommodate", "New booking", "Cancellation".
-    2.  Extract the following details if they are present:
-        - `guest_name`
-        - `property_code`
-        - `platform` ("Airbnb" or "Booking.com")
-        - `checkin_date` (in YYYY-MM-DD format)
-        - `checkout_date` (in YYYY-MM-DD format)
-        - `payout_amount` (as a float, numbers only)
-    3.  If a field is not present, use the value `null`.
-    4.  You MUST return a single, valid JSON object. Do not include any other text.
+    1.  Read the email and determine a short, descriptive `category` for its main purpose (e.g., "Guest Complaint", "New Booking", "Cancellation").
+    2.  **NEW:** Create a one-sentence `summary` of the core issue or message in the email.
+    3.  Extract the following details if they are present: `guest_name`, `property_code`, `platform`.
+    4.  If a field is not present, use the value `null`.
+    5.  You MUST return a single, valid JSON object.
+
+    **Example Input:**
+    "Dear partner, Marta Miola (reservation 4488269885) reached out to us about the blood stains in the sheets."
+
+    **Example Output:**
+    {{
+        "category": "Guest Complaint",
+        "summary": "Guest is complaining about blood stains in the sheets.",
+        "guest_name": "Marta Miola",
+        "property_code": null,
+        "platform": "Booking.com"
+    }}
 
     ---
     **Email content to parse now:**
@@ -66,15 +73,13 @@ async def parse_booking_email_with_ai(email_body: str) -> Dict:
         response = await model.generate_content_async(prompt)
         match = re.search(r'\{.*\}', response.text, re.DOTALL)
         if not match:
-            print(f"AI Email Parsing Error: No valid JSON object found in response.")
-            print(f"Raw AI Response: {response.text}")
-            return {"category": "Parsing Failed", "guest_name": None}
+            return {"category": "Parsing Failed"}
         
         cleaned_response = match.group(0)
         return json.loads(cleaned_response)
     except Exception as e:
         print(f"AI Email Parsing Exception: {e}")
-        return {"category": "Parsing Exception", "guest_name": None}
+        return {"category": "Parsing Exception"}
 
 def fetch_unread_emails() -> List[Dict]:
     """Connects to the IMAP server and fetches unread emails ONLY from the trusted forwarding address."""
@@ -83,7 +88,6 @@ def fetch_unread_emails() -> List[Dict]:
         mail.login(IMAP_USERNAME, IMAP_PASSWORD)
         mail.select("inbox")
 
-        # --- THE FIX: This query now ONLY looks for unread emails from Eli's forwarding address. ---
         search_query = '(UNSEEN FROM "sagideviso@gmail.com")'
         
         status, messages = mail.search(None, search_query)
@@ -103,7 +107,6 @@ def fetch_unread_emails() -> List[Dict]:
             if body:
                 email_details.append({"body": body})
 
-            # Mark the email as read so it's not processed again
             mail.store(num, "+FLAGS", "\\Seen")
 
         mail.logout()

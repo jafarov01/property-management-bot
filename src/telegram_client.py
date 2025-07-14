@@ -1,7 +1,6 @@
 # FILE: telegram_client.py
 # ==============================================================================
-# FINAL VERSION: Corrected syntax errors and contains all formatting functions
-# for all features, including the interactive Email Watchdog.
+# UPDATED: The email notification format now includes the AI-generated summary.
 # ==============================================================================
 
 import datetime
@@ -21,6 +20,38 @@ async def send_telegram_message(bot: telegram.Bot, text: str, topic_name: str = 
         reply_markup=reply_markup,
         parse_mode=parse_mode
     )
+
+def format_email_notification(parsed_data: dict, alert_id: int) -> tuple:
+    """Formats a high-priority, interactive notification including a summary."""
+    category = parsed_data.get("category", "Uncategorized Email")
+    guest = parsed_data.get("guest_name")
+    prop = parsed_data.get("property_code")
+    platform = parsed_data.get("platform")
+    summary = parsed_data.get("summary") # <-- New field
+    
+    title = f"‼️ *URGENT EMAIL: {category}* ‼️"
+    platform_info = f"from *{platform or 'Unknown'}*"
+    
+    message = [f"{title} {platform_info}"]
+
+    if summary:
+        message.append(f"\n*Summary:* _{summary}_")
+
+    details = []
+    if guest: details.append(f"  - **Guest:** {guest}")
+    if prop: details.append(f"  - **Property:** `{prop}`")
+    
+    if details:
+        message.append("\n*Details:*")
+        message.extend(details)
+
+    keyboard = [[
+        InlineKeyboardButton("✅ Mark as Handled", callback_data=f"handle_email:{alert_id}")
+    ]]
+    
+    return "\n".join(message), InlineKeyboardMarkup(keyboard)
+
+# ... (The rest of the file remains exactly the same) ...
 
 def format_daily_list_summary(checkins: list, cleanings: list, pending_cleanings: list, date_str: str) -> str:
     date_obj = datetime.datetime.strptime(date_str, '%Y-%m-%d')
@@ -81,41 +112,12 @@ def format_checkin_error_alert(property_code: str, new_guest: str, prop_status: 
     ]]
     return alert_text, InlineKeyboardMarkup(keyboard)
 
-def format_email_notification(parsed_data: dict, alert_id: int) -> tuple:
-    """Formats a high-priority, interactive notification based on a parsed email."""
-    category = parsed_data.get("category", "Uncategorized Email")
-    guest = parsed_data.get("guest_name")
-    prop = parsed_data.get("property_code")
-    platform = parsed_data.get("platform")
-    
-    title = f"‼️ *URGENT EMAIL: {category}* ‼️"
-    platform_info = f"from *{platform or 'Unknown'}*"
-    
-    message = [f"{title} {platform_info}"]
-
-    details = []
-    if guest: details.append(f"  - **Guest:** {guest}")
-    if prop: details.append(f"  - **Property:** `{prop}`")
-    
-    if details:
-        message.append("\n*Details:*")
-        message.extend(details)
-
-    keyboard = [[
-        InlineKeyboardButton("✅ Mark as Handled", callback_data=f"handle_email:{alert_id}")
-    ]]
-    
-    return "\n".join(message), InlineKeyboardMarkup(keyboard)
-
 def format_handled_email_notification(original_text: str, handler_name: str) -> str:
-    """Updates an email alert message to show it has been handled."""
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
-    # De-escalate the alert visually by replacing the urgent header
     cleaned_text = original_text.replace("‼️ *URGENT EMAIL:", "📧 *").replace("* ‼️", "*")
     return f"{cleaned_text}\n\n---\n✅ *Handled by {handler_name} at {timestamp}*"
 
 def format_email_reminder() -> str:
-    """Formats a high-priority reminder for an open email alert."""
     return "🚨🚨 *REMINDER: ACTION STILL REQUIRED* 🚨🚨\nThe alert above has not been handled yet. Please review and take action."
 
 def format_available_list(available_props: list, for_relocation_from: str = None) -> str:
