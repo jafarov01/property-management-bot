@@ -1,6 +1,6 @@
 # FILE: config.py
 # ==============================================================================
-# UPDATED: Added specific channel IDs for robust routing.
+# UPDATED: Added email credentials to the final validation check.
 # ==============================================================================
 import os
 from dotenv import load_dotenv
@@ -16,11 +16,8 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL') 
 
 # --- Slack Configuration ---
-# ID of the user whose posts trigger the bot (e.g., "Conny")
 SLACK_USER_ID_OF_LIST_POSTER = os.getenv('SLACK_USER_ID_OF_LIST_POSTER') 
-# ID of the channel where check-in lists are posted
 SLACK_CHECKIN_CHANNEL_ID = os.getenv('SLACK_CHECKIN_CHANNEL_ID')
-# ID of the channel where cleaning lists are posted
 SLACK_CLEANING_CHANNEL_ID = os.getenv('SLACK_CLEANING_CHANNEL_ID')
 
 # --- Telegram Configuration ---
@@ -28,7 +25,13 @@ TELEGRAM_TARGET_CHAT_ID = os.getenv('TELEGRAM_TARGET_CHAT_ID')
 TELEGRAM_TOPIC_IDS = {
     "GENERAL": 1,
     "ISSUES": 2,
+    "EMAILS": 229, # Make sure this is the correct ID for your #emails topic
 }
+
+# --- NEW: Email Watchdog Configuration ---
+IMAP_SERVER = os.getenv('IMAP_SERVER', 'imap.gmail.com')
+IMAP_USERNAME = os.getenv('IMAP_USERNAME')
+IMAP_PASSWORD = os.getenv('IMAP_PASSWORD')
 
 # --- Application Settings ---
 TIMEZONE = "Europe/Budapest"
@@ -42,6 +45,8 @@ if not all([
     GEMINI_API_KEY, 
     WEBHOOK_URL,
     SLACK_CHECKIN_CHANNEL_ID,
-    SLACK_CLEANING_CHANNEL_ID
+    SLACK_CLEANING_CHANNEL_ID,
+    IMAP_USERNAME, # Added
+    IMAP_PASSWORD  # Added
 ]):
-    raise ValueError("A required setting is missing from your .env or config file. Check all tokens, URLs, and channel IDs.")
+    raise ValueError("A required setting is missing. Check all tokens, URLs, and email credentials.")

@@ -1,7 +1,8 @@
 # FILE: main.py
 # ==============================================================================
-# FINAL VERSION: Added a global error handler to the Slack message processor
-# to prevent server crashes and provide detailed logging.
+# FINAL VERSION: Implements the complete, interactive Email Watchdog feature
+# with database logging, actionable buttons, and a reminder system.
+# This file is complete with no placeholders.
 # ==============================================================================
 
 import datetime
@@ -23,6 +24,7 @@ import config
 import telegram_client
 import slack_parser
 import models
+import email_parser  # Import the new email parser
 from database import get_db, engine
 
 # --- Database Initialization ---
@@ -62,6 +64,67 @@ COMMANDS_HELP_MANUAL = {
 }
 
 # --- Scheduled Tasks ---
+async def check_emails_task():
+    """Fetches, parses, and logs unread emails, then sends an interactive alert."""
+    print("Running email check...")
+    bot = telegram_app.bot
+    db = next(get_db())
+    try:
+        unread_emails = email_parser.fetch_unread_emails()
+        if not unread_emails:
+            print("No new emails found.")
+            return
+            
+        print(f"Found {len(unread_emails)} new emails to process.")
+        for email_data in unread_emails:
+            parsed_data = await email_parser.parse_booking_email_with_ai(email_data["body"])
+            
+            if parsed_data and parsed_data.get("category") not in ["Parsing Failed", "Parsing Exception"]:
+                # 1. Create the alert record in the database
+                new_alert = models.EmailAlert(category=parsed_data.get("category", "Uncategorized"))
+                db.add(new_alert)
+                db.commit() # Commit to get the new_alert.id
+
+                # 2. Format the message with the button
+                notification_text, reply_markup = telegram_client.format_email_notification(parsed_data, new_alert.id)
+                
+                # 3. Send the message and get its ID
+                sent_message = await telegram_client.send_telegram_message(bot, notification_text, topic_name="EMAILS", reply_markup=reply_markup)
+                
+                # 4. Save the Telegram message ID to our database record
+                if sent_message:
+                    new_alert.telegram_message_id = sent_message.message_id
+                    db.commit()
+    finally:
+        db.close()
+
+async def email_reminder_task():
+    """Checks for open email alerts and sends reminders."""
+    print("Checking for open email alerts...")
+    bot = telegram_app.bot
+    db = next(get_db())
+    try:
+        open_alerts = db.query(models.EmailAlert).filter(models.EmailAlert.status == "OPEN").all()
+        if not open_alerts:
+            return
+
+        print(f"Found {len(open_alerts)} open alerts. Sending reminders.")
+        for alert in open_alerts:
+            # Fetch the original message to include in the reminder
+            try:
+                original_message = await bot.forward_message(
+                    chat_id=config.TELEGRAM_TARGET_CHAT_ID,
+                    from_chat_id=config.TELEGRAM_TARGET_CHAT_ID,
+                    message_id=alert.telegram_message_id
+                )
+                reminder_text = telegram_client.format_email_reminder("See original alert above.")
+                await telegram_client.send_telegram_message(bot, reminder_text, topic_name="EMAILS")
+                await original_message.delete() # Delete the forwarded message to keep chat clean
+            except Exception as e:
+                print(f"Could not send reminder for alert {alert.id}: {e}")
+    finally:
+        db.close()
+
 async def send_checkout_reminder(guest_name: str, property_code: str, checkout_date: str):
     bot = telegram_app.bot
     report = telegram_client.format_checkout_reminder_alert(guest_name, property_code, checkout_date)
@@ -107,7 +170,6 @@ async def daily_midnight_task():
 
 # --- Core Logic Functions (Slack) ---
 async def process_slack_message(payload: dict):
-    # --- NEW: Global "Safety Net" Error Handler ---
     try:
         db = next(get_db())
         try:
@@ -127,6 +189,11 @@ async def process_slack_message(payload: dict):
             all_prop_codes = [p.code for p in db.query(models.Property.code).all()]
 
             if "great reset" in message_text.lower():
+                for job in scheduler.get_jobs():
+                    if job.id.startswith("checkout_reminder_") or job.id.startswith("email_reminder_"):
+                        job.remove()
+                
+                db.query(models.EmailAlert).delete()
                 db.query(models.Relocation).delete()
                 db.query(models.Issue).delete()
                 db.query(models.Booking).delete()
@@ -152,7 +219,6 @@ async def process_slack_message(payload: dict):
                     if guest_name in ["N/A", "Unknown Guest"]:
                         print(f"Skipping booking for {prop_code} due to missing guest name.")
                         continue
-
                     if prop_code == "UNKNOWN": continue
 
                     if prop_code not in all_prop_codes:
@@ -220,14 +286,10 @@ async def process_slack_message(payload: dict):
         finally:
             db.close()
     except Exception as e:
-        # This will catch ANY error, log it for us to see, and prevent a server crash.
         print(f"!!!!!! CRITICAL ERROR IN SLACK PROCESSOR !!!!!!")
         print(f"Error: {e}")
         import traceback
         traceback.print_exc()
-        # Optionally, send an alert to a super-admin channel
-        # await telegram_client.send_telegram_message(telegram_app.bot, f"Critical Error: {e}", topic_name="YOUR_ADMIN_TOPIC")
-
 
 # --- Register Slack Handler ---
 @slack_app.event("message")
@@ -237,12 +299,7 @@ async def handle_message_events(body: dict, ack):
 
 # --- Telegram Command Handlers ---
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = ["*Eivissa Operations Bot - Command Manual* 🤖\n"]
-    for command, details in COMMANDS_HELP_MANUAL.items():
-        help_text.append(f"*/{command}*")
-        help_text.append(f"_{details['description']}_")
-        help_text.append(f"Example: `{details['example']}`\n")
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="\n".join(help_text), parse_mode='Markdown')
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=telegram_client.format_help_manual(COMMANDS_HELP_MANUAL), parse_mode='Markdown')
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = next(get_db())
@@ -585,6 +642,7 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
     action, *data = query.data.split(":")
+    
     if action == "show_available":
         db = next(get_db())
         try:
@@ -593,6 +651,7 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             await query.edit_message_text(text=f"{query.message.text}\n\n{report}", parse_mode='Markdown')
         finally:
             db.close()
+            
     elif action == "swap_relocation":
         db = next(get_db())
         try:
@@ -612,6 +671,26 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                 f"To resolve, use `/relocate {first_booking.property_code} [new_room] [YYYY-MM-DD]`."
             )
             await query.edit_message_text(text=new_text, parse_mode='Markdown')
+        finally:
+            db.close()
+
+    elif action == "handle_email":
+        db = next(get_db())
+        try:
+            alert_id = int(data[0])
+            alert = db.query(models.EmailAlert).filter(models.EmailAlert.id == alert_id).first()
+            if alert and alert.status == "OPEN":
+                alert.status = "HANDLED"
+                alert.handled_by = query.from_user.full_name
+                alert.handled_at = datetime.datetime.now(datetime.timezone.utc)
+                db.commit()
+                
+                # Edit the original message to show it's handled
+                new_text = telegram_client.format_handled_email_notification(query.message.text_markdown, query.from_user.full_name)
+                await query.edit_message_text(text=new_text, parse_mode='Markdown', reply_markup=None)
+            else:
+                # If already handled, just inform the user without changing the message
+                await query.answer("This alert has already been handled.", show_alert=True)
         finally:
             db.close()
 
@@ -639,9 +718,12 @@ telegram_app.add_handler(CallbackQueryHandler(button_callback_handler))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5)
-    scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"])
-    scheduler.add_job(daily_briefing_task, 'cron', hour=22, minute=0, args=["Evening"])
+    scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, id="midnight_cleaner", replace_existing=True)
+    scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"], id="morning_briefing", replace_existing=True)
+    scheduler.add_job(daily_briefing_task, 'cron', hour=22, minute=0, args=["Evening"], id="evening_briefing", replace_existing=True)
+    scheduler.add_job(check_emails_task, 'interval', minutes=5, id="email_checker", replace_existing=True)
+    scheduler.add_job(email_reminder_task, 'interval', minutes=10, id="email_reminder", replace_existing=True)
+    
     scheduler.start()
     print("APScheduler started with all tasks scheduled.")
     await telegram_app.initialize()
