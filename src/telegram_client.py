@@ -1,7 +1,7 @@
 # FILE: telegram_client.py
 # ==============================================================================
-# UPDATED: Enhanced message formatting for high-priority email alerts
-# to make them more interactive and visually urgent.
+# FINAL VERSION: Corrected syntax errors and contains all formatting functions
+# for all features, including the interactive Email Watchdog.
 # ==============================================================================
 
 import datetime
@@ -32,7 +32,7 @@ def format_daily_list_summary(checkins: list, cleanings: list, pending_cleanings
             prop_code = booking.property.code if booking.property else booking.property_code
             message.append(f"  • `{prop_code}` - {booking.guest_name}")
     if cleanings:
-        message.append(f"\n� *Properties Marked as AVAILABLE ({len(cleanings)}):*")
+        message.append(f"\n🧹 *Properties Marked as AVAILABLE ({len(cleanings)}):*")
         message.append(f"  • `{'`, `'.join(cleanings)}`")
     if pending_cleanings:
         message.append(f"\n⏳ *Properties Marked as PENDING CLEANING ({len(pending_cleanings)}):*")
@@ -263,4 +263,3 @@ def format_invalid_code_alert(invalid_code: str, original_message: str, suggesti
         alert_text += f"*Did you mean one of these?* `{', '.join(suggestions)}`\n\n"
     alert_text += f"The original message was:\n`{original_message}`\n\nPlease check for a typo and re-submit."
     return alert_text
-�
