@@ -1,6 +1,7 @@
 # FILE: main.py
 # ==============================================================================
-# UPDATED: Added a /rename_property command to safely fix data entry errors.
+# FINAL VERSION: Fixed "Message to be replied not found" error by replacing
+# all instances of `reply_text` with the more robust `send_message`.
 # ==============================================================================
 
 import datetime
@@ -62,14 +63,12 @@ COMMANDS_HELP_MANUAL = {
 
 # --- Scheduled Tasks ---
 async def send_checkout_reminder(guest_name: str, property_code: str, checkout_date: str):
-    """Sends the high-priority checkout reminder. Gets the bot object itself."""
     bot = telegram_app.bot
     report = telegram_client.format_checkout_reminder_alert(guest_name, property_code, checkout_date)
     await telegram_client.send_telegram_message(bot, report, topic_name="ISSUES")
     print(f"Sent checkout reminder for {guest_name} in {property_code}.")
 
 async def daily_briefing_task(time_of_day: str):
-    """Queries the DB and sends the morning/evening briefing. Gets the bot object itself."""
     print(f"Running {time_of_day} briefing...")
     bot = telegram_app.bot
     db = next(get_db())
@@ -243,7 +242,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Usage: `/check [PROPERTY_CODE]`")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: `/check [PROPERTY_CODE]`")
         return
     db = next(get_db())
     try:
@@ -253,7 +252,7 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if prop and prop.status != "AVAILABLE":
             active_booking = db.query(models.Booking).filter(models.Booking.property_id == prop.id).order_by(models.Booking.id.desc()).first()
         report = telegram_client.format_property_check(prop, active_booking, prop.issues if prop else [])
-        await update.message.reply_text(report, parse_mode='Markdown')
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=report, parse_mode='Markdown')
     finally:
         db.close()
 
@@ -262,7 +261,7 @@ async def occupied_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         props = db.query(models.Property).filter(models.Property.status == "OCCUPIED").order_by(models.Property.code).all()
         report = telegram_client.format_occupied_list(props)
-        await update.message.reply_text(report, parse_mode='Markdown')
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=report, parse_mode='Markdown')
     finally:
         db.close()
 
@@ -271,13 +270,13 @@ async def available_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         props = db.query(models.Property).filter(models.Property.status == "AVAILABLE").order_by(models.Property.code).all()
         report = telegram_client.format_available_list(props)
-        await update.message.reply_text(report, parse_mode='Markdown')
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=report, parse_mode='Markdown')
     finally:
         db.close()
 
 async def early_checkout_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Usage: `/early_checkout [PROPERTY_CODE]`")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: `/early_checkout [PROPERTY_CODE]`")
         return
     db = next(get_db())
     try:
@@ -291,13 +290,13 @@ async def early_checkout_command(update: Update, context: ContextTypes.DEFAULT_T
             prop.status = "PENDING_CLEANING"
             db.commit()
             report = telegram_client.format_simple_success(f"Property `{prop_code}` has been checked out and is now *PENDING_CLEANING*.")
-        await update.message.reply_text(report, parse_mode='Markdown')
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=report, parse_mode='Markdown')
     finally:
         db.close()
 
 async def set_clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Usage: `/set_clean [PROPERTY_CODE]`")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: `/set_clean [PROPERTY_CODE]`")
         return
     db = next(get_db())
     try:
@@ -311,43 +310,38 @@ async def set_clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prop.status = "AVAILABLE"
             db.commit()
             report = telegram_client.format_simple_success(f"Property `{prop_code}` has been manually set to *AVAILABLE*.")
-        await update.message.reply_text(report, parse_mode='Markdown')
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=report, parse_mode='Markdown')
     finally:
         db.close()
 
 async def rename_property_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 2:
-        await update.message.reply_text("Usage: `/rename_property [OLD_CODE] [NEW_CODE]`")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: `/rename_property [OLD_CODE] [NEW_CODE]`")
         return
     db = next(get_db())
     try:
         old_code, new_code = context.args[0].upper(), context.args[1].upper()
         
-        # Check if the new code already exists to prevent unique constraint errors
         if db.query(models.Property).filter(models.Property.code == new_code).first():
             report = telegram_client.format_simple_error(f"Cannot rename: Property `{new_code}` already exists.")
-            await update.message.reply_text(report, parse_mode='Markdown')
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=report, parse_mode='Markdown')
             return
 
         prop_to_rename = db.query(models.Property).filter(models.Property.code == old_code).first()
         if not prop_to_rename:
             report = telegram_client.format_simple_error(f"Property `{old_code}` not found.")
         else:
-            # Update property code
             prop_to_rename.code = new_code
-            
-            # Update all associated booking records
             db.query(models.Booking).filter(models.Booking.property_code == old_code).update({"property_code": new_code})
-            
             db.commit()
             report = telegram_client.format_simple_success(f"Property `{old_code}` has been successfully renamed to `{new_code}`.")
-        await update.message.reply_text(report, parse_mode='Markdown')
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=report, parse_mode='Markdown')
     finally:
         db.close()
 
 async def relocate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 3:
-        await update.message.reply_text("Usage: `/relocate [FROM_CODE] [TO_CODE] [YYYY-MM-DD]`")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: `/relocate [FROM_CODE] [TO_CODE] [YYYY-MM-DD]`")
         return
     db = next(get_db())
     try:
@@ -355,7 +349,7 @@ async def relocate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             checkout_date = datetime.date.fromisoformat(checkout_date_str)
         except ValueError:
-            await update.message.reply_text("❌ Error: Invalid date format. Please use `YYYY-MM-DD`.")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Error: Invalid date format. Please use `YYYY-MM-DD`.")
             return
         to_prop = db.query(models.Property).filter(models.Property.code == to_code).first()
         if not to_prop or to_prop.status != "AVAILABLE":
@@ -387,7 +381,7 @@ async def relocate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"Guest *{booking_to_relocate.guest_name}* has been moved to `{to_code}`.\n"
                     f"A checkout reminder has been scheduled for *{reminder_datetime.strftime('%Y-%m-%d %H:%M')}*."
                 )
-        await update.message.reply_text(report, parse_mode='Markdown')
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=report, parse_mode='Markdown')
     finally:
         db.close()
 
@@ -396,13 +390,13 @@ async def pending_cleaning_command(update: Update, context: ContextTypes.DEFAULT
     try:
         props = db.query(models.Property).filter(models.Property.status == "PENDING_CLEANING").order_by(models.Property.code).all()
         report = telegram_client.format_pending_cleaning_list(props)
-        await update.message.reply_text(report, parse_mode='Markdown')
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=report, parse_mode='Markdown')
     finally:
         db.close()
 
 async def cancel_booking_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Usage: `/cancel_booking [PROPERTY_CODE]`")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: `/cancel_booking [PROPERTY_CODE]`")
         return
     db = next(get_db())
     try:
@@ -421,13 +415,13 @@ async def cancel_booking_command(update: Update, context: ContextTypes.DEFAULT_T
                 report = telegram_client.format_simple_success(f"Booking for *{booking.guest_name}* in `{prop_code}` has been cancelled. The property is now available.")
             else:
                 report = telegram_client.format_simple_error(f"No active booking found for `{prop_code}`.")
-        await update.message.reply_text(report, parse_mode='Markdown')
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=report, parse_mode='Markdown')
     finally:
         db.close()
 
 async def edit_booking_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 3:
-        await update.message.reply_text("Usage: `/edit_booking [CODE] [field] [new_value]`\nFields: `guest_name`, `due_payment`, `platform`")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: `/edit_booking [CODE] [field] [new_value]`\nFields: `guest_name`, `due_payment`, `platform`")
         return
     db = next(get_db())
     try:
@@ -445,13 +439,13 @@ async def edit_booking_command(update: Update, context: ContextTypes.DEFAULT_TYP
                 setattr(booking, field, new_value)
                 db.commit()
                 report = telegram_client.format_simple_success(f"Booking for `{prop_code}` updated: `{field}` is now *{new_value}*.")
-        await update.message.reply_text(report, parse_mode='Markdown')
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=report, parse_mode='Markdown')
     finally:
         db.close()
 
 async def log_issue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
-        await update.message.reply_text("Usage: `/log_issue [CODE] [description]`")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: `/log_issue [CODE] [description]`")
         return
     db = next(get_db())
     try:
@@ -465,15 +459,15 @@ async def log_issue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.commit()
             report = telegram_client.format_simple_success(f"New issue logged for `{prop_code}`: _{description}_")
             await telegram_client.send_telegram_message(context.bot, report, topic_name="ISSUES")
-            await update.message.reply_text("Issue logged successfully in the #issues topic.")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Issue logged successfully in the #issues topic.")
             return
-        await update.message.reply_text(report, parse_mode='Markdown')
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=report, parse_mode='Markdown')
     finally:
         db.close()
 
 async def block_property_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
-        await update.message.reply_text("Usage: `/block_property [CODE] [reason]`")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: `/block_property [CODE] [reason]`")
         return
     db = next(get_db())
     try:
@@ -488,13 +482,13 @@ async def block_property_command(update: Update, context: ContextTypes.DEFAULT_T
             prop.notes = reason
             db.commit()
             report = telegram_client.format_simple_success(f"Property `{prop_code}` is now blocked for *MAINTENANCE*.\nReason: _{reason}_")
-        await update.message.reply_text(report, parse_mode='Markdown')
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=report, parse_mode='Markdown')
     finally:
         db.close()
 
 async def unblock_property_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Usage: `/unblock_property [CODE]`")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: `/unblock_property [CODE]`")
         return
     db = next(get_db())
     try:
@@ -509,33 +503,33 @@ async def unblock_property_command(update: Update, context: ContextTypes.DEFAULT
             prop.notes = None
             db.commit()
             report = telegram_client.format_simple_success(f"Property `{prop_code}` has been unblocked and is now *AVAILABLE*.")
-        await update.message.reply_text(report, parse_mode='Markdown')
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=report, parse_mode='Markdown')
     finally:
         db.close()
 
 async def booking_history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Usage: `/booking_history [CODE]`")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: `/booking_history [CODE]`")
         return
     db = next(get_db())
     try:
         prop_code = context.args[0].upper()
         bookings = db.query(models.Booking).filter(models.Booking.property_code == prop_code).order_by(models.Booking.checkin_date.desc()).limit(5).all()
         report = telegram_client.format_booking_history(prop_code, bookings)
-        await update.message.reply_text(report, parse_mode='Markdown')
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=report, parse_mode='Markdown')
     finally:
         db.close()
 
 async def find_guest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Usage: `/find_guest [GUEST_NAME]`")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: `/find_guest [GUEST_NAME]`")
         return
     db = next(get_db())
     try:
         guest_name = " ".join(context.args)
         results = db.query(models.Booking).options(joinedload(models.Booking.property)).filter(models.Booking.guest_name.ilike(f"%{guest_name}%"), models.Booking.status == 'Active').all()
         report = telegram_client.format_find_guest_results(results)
-        await update.message.reply_text(report, parse_mode='Markdown')
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=report, parse_mode='Markdown')
     finally:
         db.close()
 
@@ -551,9 +545,9 @@ async def daily_revenue_command(update: Update, context: ContextTypes.DEFAULT_TY
             if numbers:
                 total_revenue += float(numbers[0])
         report = telegram_client.format_daily_revenue_report(date_str, total_revenue, len(bookings))
-        await update.message.reply_text(report, parse_mode='Markdown')
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=report, parse_mode='Markdown')
     except (ValueError, IndexError):
-        await update.message.reply_text("Invalid date format. Please use `YYYY-MM-DD`.")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Invalid date format. Please use `YYYY-MM-DD`.")
     finally:
         db.close()
 
@@ -566,7 +560,7 @@ async def relocations_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             query = query.filter((models.Relocation.original_property_code == prop_code) | (models.Relocation.new_property_code == prop_code))
         history = query.limit(10).all()
         report = telegram_client.format_relocation_history(history)
-        await update.message.reply_text(report, parse_mode='Markdown')
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=report, parse_mode='Markdown')
     finally:
         db.close()
 
