@@ -1,7 +1,7 @@
 # FILE: telegram_client.py
 # ==============================================================================
-# FINAL VERSION: Contains all formatting functions for all features,
-# including the interactive Email Watchdog. This file is complete.
+# UPDATED: Enhanced message formatting for high-priority email alerts
+# to make them more interactive and visually urgent.
 # ==============================================================================
 
 import datetime
@@ -14,7 +14,6 @@ async def send_telegram_message(bot: telegram.Bot, text: str, topic_name: str = 
     topic_id = TELEGRAM_TOPIC_IDS.get(topic_name)
     message_thread_id_to_send = topic_id if topic_name != "GENERAL" else None
     
-    # This function now returns the sent message object, which contains the message_id
     return await bot.send_message(
         chat_id=TELEGRAM_TARGET_CHAT_ID,
         text=text,
@@ -33,7 +32,7 @@ def format_daily_list_summary(checkins: list, cleanings: list, pending_cleanings
             prop_code = booking.property.code if booking.property else booking.property_code
             message.append(f"  • `{prop_code}` - {booking.guest_name}")
     if cleanings:
-        message.append(f"\n🧹 *Properties Marked as AVAILABLE ({len(cleanings)}):*")
+        message.append(f"\n� *Properties Marked as AVAILABLE ({len(cleanings)}):*")
         message.append(f"  • `{'`, `'.join(cleanings)}`")
     if pending_cleanings:
         message.append(f"\n⏳ *Properties Marked as PENDING CLEANING ({len(pending_cleanings)}):*")
@@ -83,18 +82,25 @@ def format_checkin_error_alert(property_code: str, new_guest: str, prop_status: 
     return alert_text, InlineKeyboardMarkup(keyboard)
 
 def format_email_notification(parsed_data: dict, alert_id: int) -> tuple:
-    """Formats an interactive notification based on a parsed email."""
+    """Formats a high-priority, interactive notification based on a parsed email."""
     category = parsed_data.get("category", "Uncategorized Email")
     guest = parsed_data.get("guest_name")
     prop = parsed_data.get("property_code")
     platform = parsed_data.get("platform")
     
-    title = f"📧 *{category}* from *{platform or 'Unknown'}*"
-    message = [title]
-
-    if guest: message.append(f"  - **Guest:** {guest}")
-    if prop: message.append(f"  - **Property:** `{prop}`")
+    title = f"‼️ *URGENT EMAIL: {category}* ‼️"
+    platform_info = f"from *{platform or 'Unknown'}*"
     
+    message = [f"{title} {platform_info}"]
+
+    details = []
+    if guest: details.append(f"  - **Guest:** {guest}")
+    if prop: details.append(f"  - **Property:** `{prop}`")
+    
+    if details:
+        message.append("\n*Details:*")
+        message.extend(details)
+
     keyboard = [[
         InlineKeyboardButton("✅ Mark as Handled", callback_data=f"handle_email:{alert_id}")
     ]]
@@ -104,11 +110,13 @@ def format_email_notification(parsed_data: dict, alert_id: int) -> tuple:
 def format_handled_email_notification(original_text: str, handler_name: str) -> str:
     """Updates an email alert message to show it has been handled."""
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
-    return f"{original_text}\n\n---\n✅ *Handled by {handler_name} at {timestamp}*"
+    # De-escalate the alert visually by replacing the urgent header
+    cleaned_text = original_text.replace("‼️ *URGENT EMAIL:", "📧 *").replace("* ‼️", "*")
+    return f"{cleaned_text}\n\n---\n✅ *Handled by {handler_name} at {timestamp}*"
 
-def format_email_reminder(original_text: str) -> str:
-    """Formats a reminder for an open email alert."""
-    return f"‼️ *REMINDER: This alert still requires action* ‼️\n\n{original_text}"
+def format_email_reminder() -> str:
+    """Formats a high-priority reminder for an open email alert."""
+    return "🚨🚨 *REMINDER: ACTION STILL REQUIRED* 🚨🚨\nThe alert above has not been handled yet. Please review and take action."
 
 def format_available_list(available_props: list, for_relocation_from: str = None) -> str:
     if not available_props:
@@ -255,3 +263,4 @@ def format_invalid_code_alert(invalid_code: str, original_message: str, suggesti
         alert_text += f"*Did you mean one of these?* `{', '.join(suggestions)}`\n\n"
     alert_text += f"The original message was:\n`{original_message}`\n\nPlease check for a typo and re-submit."
     return alert_text
+�

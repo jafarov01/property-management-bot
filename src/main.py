@@ -83,7 +83,7 @@ async def check_emails_task():
                 # 1. Create the alert record in the database
                 new_alert = models.EmailAlert(category=parsed_data.get("category", "Uncategorized"))
                 db.add(new_alert)
-                db.commit() # Commit to get the new_alert.id
+                db.commit()
 
                 # 2. Format the message with the button
                 notification_text, reply_markup = telegram_client.format_email_notification(parsed_data, new_alert.id)
@@ -104,22 +104,27 @@ async def email_reminder_task():
     bot = telegram_app.bot
     db = next(get_db())
     try:
-        open_alerts = db.query(models.EmailAlert).filter(models.EmailAlert.status == "OPEN").all()
+        # Find alerts that are open and were created more than 9 minutes ago
+        time_threshold = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=9)
+        open_alerts = db.query(models.EmailAlert).filter(
+            models.EmailAlert.status == "OPEN",
+            models.EmailAlert.created_at <= time_threshold
+        ).all()
+        
         if not open_alerts:
             return
 
         print(f"Found {len(open_alerts)} open alerts. Sending reminders.")
+        reminder_text = telegram_client.format_email_reminder()
         for alert in open_alerts:
-            # Fetch the original message to include in the reminder
             try:
-                original_message = await bot.forward_message(
+                # Send a reply to the original alert message to keep context
+                await bot.send_message(
                     chat_id=config.TELEGRAM_TARGET_CHAT_ID,
-                    from_chat_id=config.TELEGRAM_TARGET_CHAT_ID,
-                    message_id=alert.telegram_message_id
+                    text=reminder_text,
+                    message_thread_id=config.TELEGRAM_TOPIC_IDS.get("EMAILS"),
+                    reply_to_message_id=alert.telegram_message_id
                 )
-                reminder_text = telegram_client.format_email_reminder("See original alert above.")
-                await telegram_client.send_telegram_message(bot, reminder_text, topic_name="EMAILS")
-                await original_message.delete() # Delete the forwarded message to keep chat clean
             except Exception as e:
                 print(f"Could not send reminder for alert {alert.id}: {e}")
     finally:
@@ -190,7 +195,7 @@ async def process_slack_message(payload: dict):
 
             if "great reset" in message_text.lower():
                 for job in scheduler.get_jobs():
-                    if job.id.startswith("checkout_reminder_") or job.id.startswith("email_reminder_"):
+                    if job.id.startswith("checkout_reminder_"):
                         job.remove()
                 
                 db.query(models.EmailAlert).delete()
@@ -299,7 +304,10 @@ async def handle_message_events(body: dict, ack):
 
 # --- Telegram Command Handlers ---
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=telegram_client.format_help_manual(COMMANDS_HELP_MANUAL), parse_mode='Markdown')
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="\n".join([
+        "*Eivissa Operations Bot - Command Manual* 🤖\n",
+        *[f"*/{command}*\n_{details['description']}_\nExample: `{details['example']}`\n" for command, details in COMMANDS_HELP_MANUAL.items()]
+    ]), parse_mode='Markdown')
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = next(get_db())
@@ -685,11 +693,9 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                 alert.handled_at = datetime.datetime.now(datetime.timezone.utc)
                 db.commit()
                 
-                # Edit the original message to show it's handled
                 new_text = telegram_client.format_handled_email_notification(query.message.text_markdown, query.from_user.full_name)
                 await query.edit_message_text(text=new_text, parse_mode='Markdown', reply_markup=None)
             else:
-                # If already handled, just inform the user without changing the message
                 await query.answer("This alert has already been handled.", show_alert=True)
         finally:
             db.close()

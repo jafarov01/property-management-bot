@@ -1,7 +1,7 @@
 # FILE: email_parser.py
 # ==============================================================================
-# Contains all logic for connecting to an IMAP email server, fetching unread
-# messages, and using AI to parse their content with dynamic categories.
+# UPDATED: Implemented sender-based filtering to only process emails from
+# the specified forwarding address, ignoring all other messages.
 # ==============================================================================
 import imaplib
 import email
@@ -24,7 +24,6 @@ def get_email_body(msg):
             content_disposition = str(part.get("Content-Disposition"))
             if content_type == "text/plain" and "attachment" not in content_disposition:
                 try:
-                    # Try to decode with utf-8, fall back to latin-1 if it fails
                     return part.get_payload(decode=True).decode('utf-8')
                 except UnicodeDecodeError:
                     try:
@@ -65,7 +64,6 @@ async def parse_booking_email_with_ai(email_body: str) -> Dict:
     """
     try:
         response = await model.generate_content_async(prompt)
-        # Use regex to find the JSON object, robust against extra text
         match = re.search(r'\{.*\}', response.text, re.DOTALL)
         if not match:
             print(f"AI Email Parsing Error: No valid JSON object found in response.")
@@ -79,14 +77,16 @@ async def parse_booking_email_with_ai(email_body: str) -> Dict:
         return {"category": "Parsing Exception", "guest_name": None}
 
 def fetch_unread_emails() -> List[Dict]:
-    """Connects to the IMAP server and fetches all unread emails."""
+    """Connects to the IMAP server and fetches unread emails ONLY from the trusted forwarding address."""
     try:
         mail = imaplib.IMAP4_SSL(IMAP_SERVER)
         mail.login(IMAP_USERNAME, IMAP_PASSWORD)
         mail.select("inbox")
 
-        # Search for all unread emails
-        status, messages = mail.search(None, "UNSEEN")
+        # --- THE FIX: This query now ONLY looks for unread emails from Eli's forwarding address. ---
+        search_query = '(UNSEEN FROM "sagideviso@gmail.com")'
+        
+        status, messages = mail.search(None, search_query)
         if status != "OK" or not messages[0]:
             mail.logout()
             return []
