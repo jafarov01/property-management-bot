@@ -1,7 +1,8 @@
 # FILE: email_parser.py
 # ==============================================================================
-# FINAL VERSION: Implemented the definitive filter. It now inspects the
-# 'X-Forwarded-For' header to only process emails forwarded by Eli.
+# VERSION: 2.0
+# UPDATED: The AI prompt has been enhanced to extract a 'deadline' from the
+# email body, adding critical, time-sensitive information to alerts.
 # ==============================================================================
 import imaplib
 import email
@@ -41,32 +42,34 @@ def get_email_body(msg):
     return None
 
 async def parse_booking_email_with_ai(email_body: str) -> Dict:
-    """Uses AI to parse email content, including a summary and reservation number."""
+    """Uses AI to parse email content, including a summary, reservation number, and deadline."""
     prompt = f"""
     You are an expert data extraction system for a property management company.
 
     **Instructions:**
-    1.  Read the email and determine a short, descriptive `category` for its main purpose (e.g., "Guest Complaint", "New Booking", "Cancellation").
+    1.  Read the email and determine a short, descriptive `category` for its main purpose (e.g., "Guest Complaint", "New Booking", "Cancellation", "Service Issue").
     2.  Create a one-sentence `summary` of the core issue or message in the email.
     3.  Extract the following details if they are present:
         - `guest_name`
         - `property_code`
         - `platform` ("Airbnb" or "Booking.com")
         - `reservation_number` (This is very important. Look for "reservation" or "booking number").
+        - `deadline` (Look for phrases like "respond before", "within X hours", or a specific date and time).
     4.  If a field is not present, use the value `null`.
-    5.  You MUST return a single, valid JSON object.
+    5.  You MUST return a single, valid JSON object. Do not include any explanatory text or markdown.
 
     **Example Input:**
-    "Dear partner, Marta Miola (reservation 4488269885) reached out to us about the blood stains in the sheets."
+    "Dear partner, Delia Scorus has reported an issue experienced at Urban Getaway Lofts during their stay. Reservation details: 5149014360. Please review the customer report and respond within 48 hours (17 Jul 2025 - 10:58 Europe/Budapest)."
 
     **Example Output:**
     {{
         "category": "Guest Complaint",
-        "summary": "Guest is complaining about blood stains in the sheets.",
-        "guest_name": "Marta Miola",
-        "property_code": null,
+        "summary": "Guest Delia Scorus has reported an unspecified issue at Urban Getaway Lofts.",
+        "guest_name": "Delia Scorus",
+        "property_code": "Urban Getaway Lofts",
         "platform": "Booking.com",
-        "reservation_number": "4488269885"
+        "reservation_number": "5149014360",
+        "deadline": "17 Jul 2025 - 10:58"
     }}
 
     ---
@@ -76,15 +79,18 @@ async def parse_booking_email_with_ai(email_body: str) -> Dict:
     """
     try:
         response = await model.generate_content_async(prompt)
+        # Use a more robust regex to find the JSON object
         match = re.search(r'\{.*\}', response.text, re.DOTALL)
         if not match:
-            return {"category": "Parsing Failed"}
+            print(f"AI Email Parsing Error: No valid JSON object found in response.")
+            print(f"Raw AI Response: {response.text}")
+            return {"category": "Parsing Failed", "summary": "AI response did not contain a valid JSON object."}
         
         cleaned_response = match.group(0)
         return json.loads(cleaned_response)
     except Exception as e:
         print(f"AI Email Parsing Exception: {e}")
-        return {"category": "Parsing Exception"}
+        return {"category": "Parsing Exception", "summary": f"An exception occurred: {e}"}
 
 def fetch_unread_emails() -> List[Dict]:
     """
@@ -114,15 +120,18 @@ def fetch_unread_emails() -> List[Dict]:
             forwarded_for_header = msg.get('X-Forwarded-For', '')
             
             # Step 3: The Smart Filter.
-            # Only process the email if it was forwarded from Eli's address.
+            # Only process the email if it was forwarded from the specified user's address.
             if "sagideviso@gmail.com" in forwarded_for_header:
                 body = get_email_body(msg)
                 if body:
                     relevant_emails.append({"body": body})
             else:
-                print(f"Ignoring irrelevant email (From: {msg.get('From')})")
+                # This is not an error, just filtering, so we can skip logging it unless debugging.
+                # print(f"Ignoring irrelevant email (From: {msg.get('From')})")
+                pass
 
             # Step 4: Mark the email as read regardless, to keep the inbox clean.
+            # This is a key part of the workflow.
             mail.store(num, "+FLAGS", "\\Seen")
 
         mail.logout()

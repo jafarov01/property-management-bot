@@ -1,13 +1,15 @@
 # FILE: telegram_client.py
 # ==============================================================================
-# FINAL VERSION: Corrected syntax errors and contains all formatting functions
-# for all features, including the interactive Email Watchdog.
+# VERSION: 2.0
+# UPDATED: The email notification formatters now include a 'DEADLINE' field,
+# making urgent, time-sensitive tasks more visible to the team.
 # ==============================================================================
 
 import datetime
 import telegram
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from config import TELEGRAM_TARGET_CHAT_ID, TELEGRAM_TOPIC_IDS
+from models import EmailAlert # Import the model for type hinting
 
 async def send_telegram_message(bot: telegram.Bot, text: str, topic_name: str = "GENERAL", reply_markup=None, parse_mode: str = 'Markdown'):
     """Sends a message to a specific topic and returns the sent message object."""
@@ -81,39 +83,36 @@ def format_checkin_error_alert(property_code: str, new_guest: str, prop_status: 
     ]]
     return alert_text, InlineKeyboardMarkup(keyboard)
 
-def format_email_notification(parsed_data: dict, alert_id: int) -> tuple:
+def format_email_notification(alert_record: EmailAlert) -> tuple:
     """Formats a high-priority, interactive notification based on a parsed email."""
-    category = parsed_data.get("category", "Uncategorized Email")
-    guest = parsed_data.get("guest_name")
-    prop = parsed_data.get("property_code")
-    platform = parsed_data.get("platform")
-    summary = parsed_data.get("summary")
-    reservation_number = parsed_data.get("reservation_number")
-    
-    title = f"‼️ *URGENT EMAIL: {category}* ‼️"
-    platform_info = f"from *{platform or 'Unknown'}*"
+    title = f"‼️ *URGENT EMAIL: {alert_record.category}* ‼️"
+    platform_info = f"from *{alert_record.platform or 'Unknown'}*"
     
     message = [f"{title} {platform_info}"]
 
-    if summary:
-        message.append(f"\n*Summary:* _{summary}_")
+    if alert_record.summary:
+        message.append(f"\n*Summary:* _{alert_record.summary}_")
 
     details = []
-    if guest: details.append(f"  - **Guest:** {guest}")
-    if reservation_number: details.append(f"  - **Reservation #:** `{reservation_number}`")
-    if prop: details.append(f"  - **Property:** `{prop}`")
+    if alert_record.guest_name: details.append(f"  - **Guest:** {alert_record.guest_name}")
+    if alert_record.reservation_number: details.append(f"  - **Reservation #:** `{alert_record.reservation_number}`")
+    if alert_record.property_code: details.append(f"  - **Property:** `{alert_record.property_code}`")
     
     if details:
         message.append("\n*Details:*")
         message.extend(details)
 
+    # --- NEW: Add deadline if it exists ---
+    if alert_record.deadline:
+        message.append(f"\n⚠️ *DEADLINE:* `{alert_record.deadline}`")
+
     keyboard = [[
-        InlineKeyboardButton("✅ Mark as Handled", callback_data=f"handle_email:{alert_id}")
+        InlineKeyboardButton("✅ Mark as Handled", callback_data=f"handle_email:{alert_record.id}")
     ]]
     
     return "\n".join(message), InlineKeyboardMarkup(keyboard)
 
-def format_handled_email_notification(alert_record, handler_name: str) -> str:
+def format_handled_email_notification(alert_record: EmailAlert, handler_name: str) -> str:
     """Rebuilds an email alert message from DB data to show it has been handled."""
     title = f"📧 *{alert_record.category}* from *{alert_record.platform or 'Unknown'}*"
     message = [title]
@@ -129,6 +128,10 @@ def format_handled_email_notification(alert_record, handler_name: str) -> str:
     if details:
         message.append("\n*Details:*")
         message.extend(details)
+
+    # --- NEW: Add deadline if it exists ---
+    if alert_record.deadline:
+        message.append(f"\n*Deadline:* `{alert_record.deadline}`")
 
     timestamp = alert_record.handled_at.strftime('%Y-%m-%d %H:%M')
     message.append(f"\n---\n✅ *Handled by {handler_name} at {timestamp}*")
