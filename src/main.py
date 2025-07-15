@@ -1,9 +1,10 @@
 # FILE: main.py
 # ==============================================================================
-# VERSION: 13.0 (Final & Stable)
+# VERSION: 15.0 (Temporary DB Fix)
 # UPDATED:
-#   - Removed the temporary database-dropping script from the startup sequence.
-#   - This is the definitive, clean, and complete production version.
+#   - This script will run ONCE to drop all tables and recreate them with the
+#     new, larger column sizes from models.py v4.0. This is the definitive fix
+#     for all "value too long" errors.
 # ==============================================================================
 
 import datetime
@@ -17,6 +18,7 @@ from contextlib import asynccontextmanager
 from difflib import get_close_matches
 from fastapi import FastAPI, Request, Response
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import text
 from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
 from slack_bolt.async_app import AsyncApp
 from telegram import Update, Bot
@@ -40,9 +42,6 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[handler]
 )
-
-# --- Database Initialization ---
-models.Base.metadata.create_all(bind=engine)
 
 # --- Application Instances & Persistent Scheduler ---
 jobstores = {
@@ -202,7 +201,6 @@ async def daily_midnight_task():
     finally:
         db.close()
 
-# --- Core Logic Functions (Slack) ---
 async def process_slack_message(payload: dict):
     db = next(get_db())
     try:
@@ -315,7 +313,6 @@ async def process_slack_message(payload: dict):
     finally:
         db.close()
 
-# --- Telegram Command Handlers ---
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_chat.id, text="\n".join([
         "*Eivissa Operations Bot - Command Manual* 🤖\n",
@@ -707,8 +704,8 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # The temporary database fix has been removed.
     # This is the final, clean startup sequence.
+    # The temporary database fix has been removed.
     scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, id="midnight_cleaner", replace_existing=True)
     scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"], id="morning_briefing", replace_existing=True)
     scheduler.add_job(daily_briefing_task, 'cron', hour=22, minute=0, args=["Evening"], id="evening_briefing", replace_existing=True)
