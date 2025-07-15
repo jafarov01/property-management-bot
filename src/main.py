@@ -1,21 +1,22 @@
 # FILE: main.py
 # ==============================================================================
-# VERSION: 4.0
+# VERSION: 5.0
 # UPDATED:
-#   - Replaced all `print()` statements with the standard `logging` module.
-#     This is the definitive fix for making logs visible on Render.
-#   - This version provides the necessary visibility to debug background tasks.
+#   - Added a TEMPORARY one-time startup script to clear the 'apscheduler_jobs'
+#     table. This is a definitive fix for a corrupted scheduler state without
+#     needing a paid shell.
 # ==============================================================================
 
 import datetime
 import re
 import asyncio
-import logging  # Import the logging module
+import logging
 import traceback
 from contextlib import asynccontextmanager
 from difflib import get_close_matches
 from fastapi import FastAPI, Request, Response
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import text # Import the 'text' function
 from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
 from slack_bolt.async_app import AsyncApp
 from telegram import Update
@@ -31,7 +32,6 @@ import email_parser
 from database import get_db, engine
 
 # --- CONFIGURE LOGGING ---
-# This is the standard way to configure logging in a Python application.
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -74,28 +74,22 @@ COMMANDS_HELP_MANUAL = {
     "help": {"description": "Show this help manual.", "example": "/help"}
 }
 
-# --- Global Error Handler ---
+# --- Global Error Handler (No changes) ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log the error and send a telegram message to notify the developer."""
     logging.error("Exception caught by global error handler", exc_info=context.error)
-    
     error_message = (
         f"🚨 *An unexpected error occurred*\n\n"
         f"*Type:* `{type(context.error).__name__}`\n"
         f"*Error:* `{context.error}`\n\n"
         f"Details have been logged for review."
     )
-    
     await telegram_client.send_telegram_message(context.bot, error_message, topic_name="ISSUES")
 
-# --- Scheduled Tasks ---
-
+# --- Scheduled Tasks (No changes) ---
 async def scheduler_heartbeat():
-    """A simple task that runs every minute to confirm the scheduler is alive."""
     logging.info("--- APScheduler Heartbeat: Still Alive ---")
 
 async def check_emails_task():
-    """Fetches, parses, and logs unread emails with a robust retry mechanism."""
     try:
         logging.info("Running email check...")
         bot = telegram_app.bot
@@ -160,7 +154,6 @@ async def check_emails_task():
     except Exception:
         logging.critical("FATAL UNHANDLED EXCEPTION IN 'check_emails_task'", exc_info=True)
 
-
 async def email_reminder_task():
     try:
         logging.info("Checking for open email alerts...")
@@ -192,7 +185,6 @@ async def email_reminder_task():
             db.close()
     except Exception:
         logging.critical("FATAL UNHANDLED EXCEPTION IN 'email_reminder_task'", exc_info=True)
-
 
 async def send_checkout_reminder(guest_name: str, property_code: str, checkout_date: str):
     try:
@@ -248,7 +240,7 @@ async def daily_midnight_task():
         logging.critical("FATAL UNHANDLED EXCEPTION IN 'daily_midnight_task'", exc_info=True)
 
 
-# --- Core Logic Functions (Slack) ---
+# --- Core Logic Functions (Slack) (No changes) ---
 async def process_slack_message(payload: dict):
     db = next(get_db())
     try:
@@ -355,6 +347,7 @@ async def process_slack_message(payload: dict):
     finally:
         db.close()
 
+# ... (The rest of the file remains the same)
 @slack_app.event("message")
 async def handle_message_events(body: dict, ack):
     await ack()
@@ -395,7 +388,6 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         db.close()
 
-# ... (The rest of the Telegram command handlers remain the same, no changes needed)
 async def occupied_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = next(get_db())
     try:
@@ -774,6 +766,18 @@ telegram_app.add_error_handler(error_handler)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # --- TEMPORARY SCHEDULER RESET SCRIPT ---
+    try:
+        logging.info("Attempting to clear scheduler jobs table for a clean start...")
+        with engine.connect() as connection:
+            with connection.begin():
+                # Use TRUNCATE for a clean and fast reset.
+                connection.execute(text("TRUNCATE TABLE apscheduler_jobs;"))
+            logging.info("Successfully cleared 'apscheduler_jobs' table.")
+    except Exception as e:
+        logging.warning(f"Could not clear 'apscheduler_jobs' table (this is okay if it's the first run): {e}")
+
+    # --- Add all jobs to the now-clean scheduler ---
     scheduler.add_job(scheduler_heartbeat, 'interval', minutes=1, id="heartbeat", replace_existing=True)
     scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, id="midnight_cleaner", replace_existing=True)
     scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"], id="morning_briefing", replace_existing=True)
