@@ -1,17 +1,16 @@
 # FILE: main.py
 # ==============================================================================
-# VERSION: 3.0
+# VERSION: 4.0
 # UPDATED:
-#   - Added a 'scheduler_heartbeat' task to monitor scheduler health.
-#   - Wrapped all scheduled tasks in a top-level "safety net" try-except
-#     block to prevent any single task failure from crashing the scheduler.
-#   - This version is focused on maximum stability and visibility.
+#   - Replaced all `print()` statements with the standard `logging` module.
+#     This is the definitive fix for making logs visible on Render.
+#   - This version provides the necessary visibility to debug background tasks.
 # ==============================================================================
 
 import datetime
 import re
 import asyncio
-import time
+import logging  # Import the logging module
 import traceback
 from contextlib import asynccontextmanager
 from difflib import get_close_matches
@@ -19,7 +18,7 @@ from fastapi import FastAPI, Request, Response
 from sqlalchemy.orm import Session, joinedload
 from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
 from slack_bolt.async_app import AsyncApp
-from telegram import Update, Bot
+from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
@@ -30,6 +29,14 @@ import slack_parser
 import models
 import email_parser
 from database import get_db, engine
+
+# --- CONFIGURE LOGGING ---
+# This is the standard way to configure logging in a Python application.
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 # --- Database Initialization ---
 models.Base.metadata.create_all(bind=engine)
@@ -67,32 +74,30 @@ COMMANDS_HELP_MANUAL = {
     "help": {"description": "Show this help manual.", "example": "/help"}
 }
 
-# --- Global Error Handler (No changes) ---
+# --- Global Error Handler ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    print(f"!!!!!!!!!! EXCEPTION CAUGHT BY GLOBAL HANDLER !!!!!!!!!!")
-    print(f"Update: {update}")
-    print(f"Error: {context.error}")
-    tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
-    tb_string = "".join(tb_list)
+    """Log the error and send a telegram message to notify the developer."""
+    logging.error("Exception caught by global error handler", exc_info=context.error)
+    
     error_message = (
         f"🚨 *An unexpected error occurred*\n\n"
         f"*Type:* `{type(context.error).__name__}`\n"
         f"*Error:* `{context.error}`\n\n"
         f"Details have been logged for review."
     )
-    print(tb_string)
+    
     await telegram_client.send_telegram_message(context.bot, error_message, topic_name="ISSUES")
 
-# --- Scheduled Tasks (WITH SAFETY NETS) ---
+# --- Scheduled Tasks ---
 
 async def scheduler_heartbeat():
     """A simple task that runs every minute to confirm the scheduler is alive."""
-    print(f"--- APScheduler Heartbeat: Still Alive --- {datetime.datetime.now().isoformat()}")
+    logging.info("--- APScheduler Heartbeat: Still Alive ---")
 
 async def check_emails_task():
     """Fetches, parses, and logs unread emails with a robust retry mechanism."""
     try:
-        print("Running email check...")
+        logging.info("Running email check...")
         bot = telegram_app.bot
         db = next(get_db())
         try:
@@ -100,7 +105,7 @@ async def check_emails_task():
             if not unread_emails:
                 return
             
-            print(f"Found {len(unread_emails)} new emails to process.")
+            logging.info(f"Found {len(unread_emails)} new emails to process.")
             for email_data in unread_emails:
                 parsed_data = None
                 for attempt in range(3):
@@ -109,10 +114,10 @@ async def check_emails_task():
                         if parsed_data and parsed_data.get("category") not in ["Parsing Failed", "Parsing Exception"]:
                             break
                         else:
-                            print(f"AI Parsing Warning on attempt {attempt+1}: {parsed_data.get('summary', 'No summary')}")
+                            logging.warning(f"AI Parsing Warning on attempt {attempt+1}: {parsed_data.get('summary', 'No summary')}")
                             parsed_data = None
                     except Exception as e:
-                        print(f"AI parsing attempt {attempt + 1} failed: {e}")
+                        logging.error(f"AI parsing attempt {attempt + 1} failed:", exc_info=e)
                         if attempt < 2: await asyncio.sleep(5)
                 
                 if not parsed_data:
@@ -140,7 +145,7 @@ async def check_emails_task():
                         if sent_message:
                             break
                     except Exception as e:
-                        print(f"Telegram sending attempt {attempt + 1} failed: {e}")
+                        logging.error(f"Telegram sending attempt {attempt + 1} failed:", exc_info=e)
                         if attempt < 2: await asyncio.sleep(5)
 
                 if not sent_message:
@@ -149,18 +154,16 @@ async def check_emails_task():
                 
                 new_alert.telegram_message_id = sent_message.message_id
                 db.commit()
-                print(f"Successfully processed and sent alert for email: {new_alert.category}")
+                logging.info(f"Successfully processed and sent alert for email: {new_alert.category}")
         finally:
             db.close()
-    except Exception as e:
-        print(f"!!!!!! FATAL UNHANDLED EXCEPTION IN 'check_emails_task' !!!!!!")
-        traceback.print_exc()
+    except Exception:
+        logging.critical("FATAL UNHANDLED EXCEPTION IN 'check_emails_task'", exc_info=True)
 
 
 async def email_reminder_task():
-    """Checks for open email alerts and sends reminders."""
     try:
-        print("Checking for open email alerts...")
+        logging.info("Checking for open email alerts...")
         bot = telegram_app.bot
         db = next(get_db())
         try:
@@ -173,12 +176,10 @@ async def email_reminder_task():
             if not open_alerts:
                 return
 
-            print(f"Found {len(open_alerts)} open alerts. Sending reminders.")
+            logging.info(f"Found {len(open_alerts)} open alerts. Sending reminders.")
             reminder_text = telegram_client.format_email_reminder()
             for alert in open_alerts:
                 try:
-                    # Use a different field to track reminders to not conflict with handled_at
-                    # For now, this logic is simple. A more complex system could use a separate table.
                     await bot.send_message(
                         chat_id=config.TELEGRAM_TARGET_CHAT_ID,
                         text=reminder_text,
@@ -186,12 +187,11 @@ async def email_reminder_task():
                         reply_to_message_id=alert.telegram_message_id
                     )
                 except Exception as e:
-                    print(f"Could not send reminder for alert {alert.id}: {e}")
+                    logging.error(f"Could not send reminder for alert {alert.id}", exc_info=e)
         finally:
             db.close()
-    except Exception as e:
-        print(f"!!!!!! FATAL UNHANDLED EXCEPTION IN 'email_reminder_task' !!!!!!")
-        traceback.print_exc()
+    except Exception:
+        logging.critical("FATAL UNHANDLED EXCEPTION IN 'email_reminder_task'", exc_info=True)
 
 
 async def send_checkout_reminder(guest_name: str, property_code: str, checkout_date: str):
@@ -199,14 +199,13 @@ async def send_checkout_reminder(guest_name: str, property_code: str, checkout_d
         bot = telegram_app.bot
         report = telegram_client.format_checkout_reminder_alert(guest_name, property_code, checkout_date)
         await telegram_client.send_telegram_message(bot, report, topic_name="ISSUES")
-        print(f"Sent checkout reminder for {guest_name} in {property_code}.")
-    except Exception as e:
-        print(f"!!!!!! FATAL UNHANDLED EXCEPTION IN 'send_checkout_reminder' !!!!!!")
-        traceback.print_exc()
+        logging.info(f"Sent checkout reminder for {guest_name} in {property_code}.")
+    except Exception:
+        logging.critical(f"FATAL UNHANDLED EXCEPTION IN 'send_checkout_reminder' for {guest_name}", exc_info=True)
 
 async def daily_briefing_task(time_of_day: str):
     try:
-        print(f"Running {time_of_day} briefing...")
+        logging.info(f"Running {time_of_day} briefing...")
         bot = telegram_app.bot
         db = next(get_db())
         try:
@@ -218,18 +217,18 @@ async def daily_briefing_task(time_of_day: str):
             await telegram_client.send_telegram_message(bot, report, topic_name="GENERAL")
         finally:
             db.close()
-    except Exception as e:
-        print(f"!!!!!! FATAL UNHANDLED EXCEPTION IN 'daily_briefing_task' !!!!!!")
-        traceback.print_exc()
+    except Exception:
+        logging.critical(f"FATAL UNHANDLED EXCEPTION IN 'daily_briefing_task' for {time_of_day}", exc_info=True)
 
 async def daily_midnight_task():
     try:
+        logging.info("Running midnight task...")
         db = next(get_db())
         bot = telegram_app.bot
         try:
             props_to_make_available = db.query(models.Property).filter(models.Property.status == "PENDING_CLEANING").all()
             if not props_to_make_available:
-                print("Midnight Task: No properties were pending cleaning.")
+                logging.info("Midnight Task: No properties were pending cleaning.")
                 return
             prop_codes = [prop.code for prop in props_to_make_available]
             for prop in props_to_make_available:
@@ -239,19 +238,16 @@ async def daily_midnight_task():
                             f"🧹 The following {len(prop_codes)} properties have been cleaned and are now *AVAILABLE* for the new day:\n\n"
                             f"`{', '.join(sorted(prop_codes))}`")
             await telegram_client.send_telegram_message(bot, summary_text, topic_name="GENERAL")
-            print(f"Midnight Task: Set {len(prop_codes)} properties to AVAILABLE.")
+            logging.info(f"Midnight Task: Set {len(prop_codes)} properties to AVAILABLE.")
         except Exception as e:
-            print(f"Error during midnight task: {e}")
+            logging.error("Error during midnight task execution", exc_info=e)
             await telegram_client.send_telegram_message(bot, f"🚨 Error in scheduled midnight task: {e}", topic_name="ISSUES")
         finally:
             db.close()
-    except Exception as e:
-        print(f"!!!!!! FATAL UNHANDLED EXCEPTION IN 'daily_midnight_task' !!!!!!")
-        traceback.print_exc()
+    except Exception:
+        logging.critical("FATAL UNHANDLED EXCEPTION IN 'daily_midnight_task'", exc_info=True)
 
 
-# --- Core Logic & Handlers (No changes below this line) ---
-# ... (The rest of the file remains the same)
 # --- Core Logic Functions (Slack) ---
 async def process_slack_message(payload: dict):
     db = next(get_db())
@@ -266,7 +262,7 @@ async def process_slack_message(payload: dict):
         message_ts = float(event.get('ts', time.time()))
         list_date_str = datetime.date.fromtimestamp(message_ts).isoformat()
 
-        print(f"MESSAGE RECEIVED from {user_id} in channel {channel_id}: {message_text[:50]}...")
+        logging.info(f"MESSAGE RECEIVED from {user_id} in channel {channel_id}: {message_text[:50]}...")
         bot = telegram_app.bot
         
         all_prop_codes = [p.code for p in db.query(models.Property.code).all()]
@@ -280,7 +276,7 @@ async def process_slack_message(payload: dict):
                     guest_name = booking_data["guest_name"]
 
                     if guest_name in ["N/A", "Unknown Guest"]:
-                        print(f"Skipping booking for {prop_code} due to missing guest name.")
+                        logging.warning(f"Skipping booking for {prop_code} due to missing guest name.")
                         continue
                     if prop_code == "UNKNOWN": continue
 
@@ -323,8 +319,7 @@ async def process_slack_message(payload: dict):
                     db.commit()
                 except Exception as e:
                     db.rollback()
-                    print(f"Error processing a single check-in line: {booking_data}. Error: {e}")
-                    traceback.print_exc()
+                    logging.error(f"Error processing a single check-in line: {booking_data}.", exc_info=e)
                     await telegram_client.send_telegram_message(bot, f"⚠️ Failed to process one line of the check-in list: `{booking_data}`. Please check it manually.", topic_name="ISSUES")
 
             if processed_bookings:
@@ -354,11 +349,9 @@ async def process_slack_message(payload: dict):
             db.commit()
             receipt_message = telegram_client.format_cleaning_list_receipt(success_codes, warnings)
             await telegram_client.send_telegram_message(bot, receipt_message, topic_name="GENERAL")
-    except Exception as e:
+    except Exception:
         db.rollback()
-        print(f"!!!!!! CRITICAL ERROR IN SLACK PROCESSOR !!!!!!")
-        print(f"Error: {e}")
-        traceback.print_exc()
+        logging.critical("CRITICAL ERROR IN SLACK PROCESSOR", exc_info=True)
     finally:
         db.close()
 
@@ -402,6 +395,7 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         db.close()
 
+# ... (The rest of the Telegram command handlers remain the same, no changes needed)
 async def occupied_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = next(get_db())
     try:
@@ -780,7 +774,6 @@ telegram_app.add_error_handler(error_handler)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # --- ADD HEARTBEAT AND SAFETY NETS TO ALL JOBS ---
     scheduler.add_job(scheduler_heartbeat, 'interval', minutes=1, id="heartbeat", replace_existing=True)
     scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, id="midnight_cleaner", replace_existing=True)
     scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"], id="morning_briefing", replace_existing=True)
@@ -789,17 +782,17 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(email_reminder_task, 'interval', minutes=10, id="email_reminder", replace_existing=True)
     
     scheduler.start()
-    print("APScheduler started with all tasks scheduled (including heartbeat).")
+    logging.info("APScheduler started with all tasks scheduled (including heartbeat).")
     await telegram_app.initialize()
     await telegram_app.start()
     webhook_url = f"{config.WEBHOOK_URL}/telegram/webhook"
     await telegram_app.bot.set_webhook(url=webhook_url)
-    print("Telegram webhook set to:", webhook_url)
+    logging.info(f"Telegram webhook set to: {webhook_url}")
     yield
     await telegram_app.stop()
     await telegram_app.shutdown()
     scheduler.shutdown()
-    print("Telegram webhook deleted and scheduler shut down.")
+    logging.info("Telegram webhook deleted and scheduler shut down.")
 
 app = FastAPI(lifespan=lifespan)
 
@@ -818,5 +811,5 @@ async def slack_events_endpoint(req: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    print("Starting application server...")
+    logging.info("Starting application server...")
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
