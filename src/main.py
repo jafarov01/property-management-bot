@@ -1,7 +1,8 @@
 # FILE: main.py
 # ==============================================================================
-# FINAL VERSION: Added a root health check endpoint to satisfy monitoring
-# services and ensure the bot always reports as "online".
+# FINAL VERSION: Implements the complete, interactive Email Watchdog feature
+# with database logging, actionable buttons, and a reminder system.
+# This file is complete with no placeholders.
 # ==============================================================================
 
 import datetime
@@ -24,7 +25,7 @@ import config
 import telegram_client
 import slack_parser
 import models
-import email_parser
+import email_parser  # Import the new email parser
 from database import get_db, engine
 
 # --- Database Initialization ---
@@ -63,7 +64,7 @@ COMMANDS_HELP_MANUAL = {
     "help": {"description": "Show this help manual.", "example": "/help"}
 }
 
-# --- NEW: Global Error Handler ---
+# --- Global Error Handler ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log the error and send a telegram message to notify the developer."""
     print(f"!!!!!!!!!! EXCEPTION CAUGHT BY GLOBAL HANDLER !!!!!!!!!!")
@@ -85,8 +86,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     await telegram_client.send_telegram_message(context.bot, error_message, topic_name="ISSUES")
 
 # --- Scheduled Tasks ---
-# (All scheduled tasks remain unchanged)
 async def check_emails_task():
+    """Fetches, parses, and logs unread emails, then sends an interactive alert."""
     print("Running email check...")
     bot = telegram_app.bot
     db = next(get_db())
@@ -101,11 +102,25 @@ async def check_emails_task():
             parsed_data = await email_parser.parse_booking_email_with_ai(email_data["body"])
             
             if parsed_data and parsed_data.get("category") not in ["Parsing Failed", "Parsing Exception"]:
-                new_alert = models.EmailAlert(category=parsed_data.get("category", "Uncategorized"))
+                # 1. Create the alert record in the database, storing all parsed details
+                new_alert = models.EmailAlert(
+                    category=parsed_data.get("category", "Uncategorized"),
+                    summary=parsed_data.get("summary"),
+                    guest_name=parsed_data.get("guest_name"),
+                    property_code=parsed_data.get("property_code"),
+                    platform=parsed_data.get("platform"),
+                    reservation_number=parsed_data.get("reservation_number")
+                )
                 db.add(new_alert)
                 db.commit()
-                notification_text, reply_markup = telegram_client.format_email_notification(parsed_data, new_alert.id)
+
+                # 2. Format the message with the button
+                notification_text, reply_markup = telegram_client.format_email_notification(new_alert)
+                
+                # 3. Send the message and get its ID
                 sent_message = await telegram_client.send_telegram_message(bot, notification_text, topic_name="EMAILS", reply_markup=reply_markup)
+                
+                # 4. Save the Telegram message ID to our database record
                 if sent_message:
                     new_alert.telegram_message_id = sent_message.message_id
                     db.commit()
@@ -113,6 +128,7 @@ async def check_emails_task():
         db.close()
 
 async def email_reminder_task():
+    """Checks for open email alerts and sends reminders."""
     print("Checking for open email alerts...")
     bot = telegram_app.bot
     db = next(get_db())
@@ -318,7 +334,6 @@ async def handle_message_events(body: dict, ack):
     asyncio.create_task(process_slack_message(body))
 
 # --- Telegram Command Handlers ---
-# (All command handlers remain unchanged)
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_chat.id, text="\n".join([
         "*Eivissa Operations Bot - Command Manual* 🤖\n",
@@ -709,7 +724,7 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                 alert.handled_at = datetime.datetime.now(datetime.timezone.utc)
                 db.commit()
                 
-                new_text = telegram_client.format_handled_email_notification(query.message.text_markdown, query.from_user.full_name)
+                new_text = telegram_client.format_handled_email_notification(alert, query.from_user.full_name)
                 await query.edit_message_text(text=new_text, parse_mode='Markdown', reply_markup=None)
             else:
                 await query.answer("This alert has already been handled.", show_alert=True)
@@ -738,7 +753,6 @@ telegram_app.add_handler(CommandHandler("daily_revenue", daily_revenue_command))
 telegram_app.add_handler(CommandHandler("relocations", relocations_command))
 telegram_app.add_handler(CallbackQueryHandler(button_callback_handler))
 
-# --- NEW: Add the global error handler ---
 telegram_app.add_error_handler(error_handler)
 
 @asynccontextmanager
@@ -764,7 +778,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- NEW: Health Check Endpoint ---
 @app.get("/")
 async def health_check():
     return {"status": "ok", "message": "Eivissa Operations Bot is alive!"}
