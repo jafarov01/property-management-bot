@@ -2,8 +2,6 @@
 # ==============================================================================
 # VERSION: 13.0 (Final & Stable)
 # UPDATED:
-#   - Restored the missing Telegram command handler functions (help_command,
-#     status_command, etc.) to fix the 'NameError' on startup.
 #   - Removed the temporary database-dropping script from the startup sequence.
 #   - This is the definitive, clean, and complete production version.
 # ==============================================================================
@@ -19,7 +17,6 @@ from contextlib import asynccontextmanager
 from difflib import get_close_matches
 from fastapi import FastAPI, Request, Response
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import text
 from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
 from slack_bolt.async_app import AsyncApp
 from telegram import Update, Bot
@@ -708,24 +705,10 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
     finally:
         db.close()
 
-# --- App Lifecycle and Registration ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # --- TEMPORARY DATABASE FIX SCRIPT ---
-    try:
-        logging.info("Attempting to drop 'email_alerts' table to ensure schema is up to date...")
-        with engine.connect() as connection:
-            with connection.begin():
-                connection.execute(text("DROP TABLE IF EXISTS email_alerts;"))
-            logging.info("Successfully dropped 'email_alerts' table.")
-    except Exception as e:
-        logging.warning(f"Could not drop 'email_alerts' table (this is okay if it's the first run): {e}")
-
-    # Re-run create_all to create the new, correct table
-    models.Base.metadata.create_all(bind=engine)
-    logging.info("Finished create_all, 'email_alerts' table should now be correct.")
-
-    # --- Production Startup Sequence ---
+    # The temporary database fix has been removed.
+    # This is the final, clean startup sequence.
     scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, id="midnight_cleaner", replace_existing=True)
     scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"], id="morning_briefing", replace_existing=True)
     scheduler.add_job(daily_briefing_task, 'cron', hour=22, minute=0, args=["Evening"], id="evening_briefing", replace_existing=True)
