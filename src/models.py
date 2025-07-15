@@ -1,8 +1,8 @@
 # FILE: models.py
 # ==============================================================================
-# VERSION: 2.0
-# UPDATED: Added a 'deadline' column to the EmailAlert table to store parsed
-# deadline information, making alerts more actionable.
+# VERSION: 3.0 (Production)
+# UPDATED: Increased the size of the 'property_code' column in the EmailAlert
+# table to String(255) to prevent 'DataError' for long property names.
 # ==============================================================================
 from sqlalchemy import Column, Integer, String, Date, ForeignKey, Text, DateTime, BigInteger
 from sqlalchemy.orm import relationship
@@ -63,9 +63,8 @@ class EmailAlert(Base):
     # --- Columns to store parsed data ---
     summary = Column(Text, nullable=True)
     guest_name = Column(String(255), nullable=True)
-    property_code = Column(String(20), nullable=True)
+    # THE FIX: Increased size to handle long property names from emails.
+    property_code = Column(String(255), nullable=True) 
     platform = Column(String(50), nullable=True)
     reservation_number = Column(String(50), nullable=True)
-    
-    # --- NEW COLUMN FOR DEADLINE ---
     deadline = Column(String(100), nullable=True)
