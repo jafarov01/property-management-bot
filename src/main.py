@@ -1,7 +1,7 @@
 # FILE: main.py
 # ==============================================================================
-# FINAL VERSION: Implemented a robust, crash-proof error handling system
-# to ensure stability and provide transparent error logging.
+# FINAL VERSION: Added a root health check endpoint to satisfy monitoring
+# services and ensure the bot always reports as "online".
 # ==============================================================================
 
 import datetime
@@ -70,11 +70,9 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     print(f"Update: {update}")
     print(f"Error: {context.error}")
     
-    # Format the traceback to be readable in Telegram
     tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
     tb_string = "".join(tb_list)
     
-    # Keep the message short for Telegram, log the full details
     error_message = (
         f"🚨 *An unexpected error occurred*\n\n"
         f"*Type:* `{type(context.error).__name__}`\n"
@@ -82,13 +80,12 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         f"Details have been logged for review."
     )
     
-    print(tb_string) # Log the full traceback to Render logs
+    print(tb_string)
     
-    # Send the alert to the #issues topic
     await telegram_client.send_telegram_message(context.bot, error_message, topic_name="ISSUES")
 
 # --- Scheduled Tasks ---
-# (All scheduled tasks like check_emails_task, daily_briefing_task, etc. remain unchanged)
+# (All scheduled tasks remain unchanged)
 async def check_emails_task():
     print("Running email check...")
     bot = telegram_app.bot
@@ -232,7 +229,6 @@ async def process_slack_message(payload: dict):
                 new_bookings_data = await slack_parser.parse_checkin_list_with_ai(message_text, list_date_str)
                 processed_bookings = []
                 for booking_data in new_bookings_data:
-                    # --- NEW: Isolate errors to a single booking line ---
                     try:
                         prop_code = booking_data["property_code"]
                         guest_name = booking_data["guest_name"]
@@ -322,7 +318,7 @@ async def handle_message_events(body: dict, ack):
     asyncio.create_task(process_slack_message(body))
 
 # --- Telegram Command Handlers ---
-# (All command handlers like help_command, status_command, etc. remain unchanged)
+# (All command handlers remain unchanged)
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_chat.id, text="\n".join([
         "*Eivissa Operations Bot - Command Manual* 🤖\n",
@@ -759,7 +755,7 @@ async def lifespan(app: FastAPI):
     await telegram_app.start()
     webhook_url = f"{config.WEBHOOK_URL}/telegram/webhook"
     await telegram_app.bot.set_webhook(url=webhook_url)
-    print(f"Telegram webhook set to: {webhook_url}")
+    print("Telegram webhook set to:", webhook_url)
     yield
     await telegram_app.stop()
     await telegram_app.shutdown()
@@ -767,6 +763,11 @@ async def lifespan(app: FastAPI):
     print("Telegram webhook deleted and scheduler shut down.")
 
 app = FastAPI(lifespan=lifespan)
+
+# --- NEW: Health Check Endpoint ---
+@app.get("/")
+async def health_check():
+    return {"status": "ok", "message": "Eivissa Operations Bot is alive!"}
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(req: Request):
