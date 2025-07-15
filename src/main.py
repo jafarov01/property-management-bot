@@ -1,9 +1,11 @@
 # FILE: main.py
 # ==============================================================================
-# VERSION: 6.0 (Diagnostic)
+# VERSION: 7.0 (Production)
 # UPDATED:
-#   - TEMPORARILY disabled the scheduler by commenting out `scheduler.start()`.
-#   - This is a diagnostic step to confirm and kill any "ghost" processes.
+#   - This is the final, stable, production-ready version.
+#   - The scheduler is re-enabled.
+#   - The one-time database clearing script has been removed.
+#   - All previous fixes (logging, retries, atomic locks) are included.
 # ==============================================================================
 
 import datetime
@@ -50,7 +52,7 @@ slack_app = AsyncApp(token=config.SLACK_BOT_TOKEN, signing_secret=config.SLACK_S
 telegram_app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
 slack_handler = AsyncSlackRequestHandler(slack_app)
 
-# --- DYNAMIC HELP COMMAND MANUAL (No changes) ---
+# --- DYNAMIC HELP COMMAND MANUAL ---
 COMMANDS_HELP_MANUAL = {
     "status": {"description": "Get a full summary of all property statuses.", "example": "/status"},
     "check": {"description": "Get a detailed status report for a single property.", "example": "/check A1"},
@@ -73,7 +75,7 @@ COMMANDS_HELP_MANUAL = {
     "help": {"description": "Show this help manual.", "example": "/help"}
 }
 
-# --- Global Error Handler (No changes) ---
+# --- Global Error Handler ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logging.error("Exception caught by global error handler", exc_info=context.error)
     error_message = (
@@ -84,7 +86,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     )
     await telegram_client.send_telegram_message(context.bot, error_message, topic_name="ISSUES")
 
-# --- Scheduled Tasks (Will not run in this version) ---
+# --- Scheduled Tasks ---
 async def scheduler_heartbeat():
     logging.info("--- APScheduler Heartbeat: Still Alive ---")
 
@@ -239,7 +241,7 @@ async def daily_midnight_task():
         logging.critical("FATAL UNHANDLED EXCEPTION IN 'daily_midnight_task'", exc_info=True)
 
 
-# --- Core Logic Functions (Slack) (No changes) ---
+# --- Core Logic Functions (Slack) ---
 async def process_slack_message(payload: dict):
     db = next(get_db())
     try:
@@ -346,7 +348,6 @@ async def process_slack_message(payload: dict):
     finally:
         db.close()
 
-# ... (The rest of the file remains the same)
 @slack_app.event("message")
 async def handle_message_events(body: dict, ack):
     await ack()
@@ -765,19 +766,19 @@ telegram_app.add_error_handler(error_handler)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # --- DIAGNOSTIC: SCHEDULER IS DISABLED ---
-    logging.warning("DIAGNOSTIC MODE: The scheduler is currently disabled to test for ghost processes.")
+    # --- Production Startup Sequence ---
+    # The temporary scheduler reset code has been removed.
     
-    # scheduler.add_job(scheduler_heartbeat, 'interval', minutes=1, id="heartbeat", replace_existing=True)
-    # scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, id="midnight_cleaner", replace_existing=True)
-    # scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"], id="morning_briefing", replace_existing=True)
-    # scheduler.add_job(daily_briefing_task, 'cron', hour=22, minute=0, args=["Evening"], id="evening_briefing", replace_existing=True)
-    # scheduler.add_job(check_emails_task, 'interval', minutes=5, id="email_checker", replace_existing=True)
-    # scheduler.add_job(email_reminder_task, 'interval', minutes=10, id="email_reminder", replace_existing=True)
+    scheduler.add_job(scheduler_heartbeat, 'interval', minutes=1, id="heartbeat", replace_existing=True)
+    scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, id="midnight_cleaner", replace_existing=True)
+    scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"], id="morning_briefing", replace_existing=True)
+    scheduler.add_job(daily_briefing_task, 'cron', hour=22, minute=0, args=["Evening"], id="evening_briefing", replace_existing=True)
+    scheduler.add_job(check_emails_task, 'interval', minutes=5, id="email_checker", replace_existing=True)
+    scheduler.add_job(email_reminder_task, 'interval', minutes=10, id="email_reminder", replace_existing=True)
     
-    # scheduler.start() # <-- THIS LINE IS COMMENTED OUT
+    scheduler.start()
+    logging.info("APScheduler started with all tasks scheduled (including heartbeat).")
     
-    logging.info("APScheduler is NOT started.")
     await telegram_app.initialize()
     await telegram_app.start()
     webhook_url = f"{config.WEBHOOK_URL}/telegram/webhook"
@@ -786,8 +787,8 @@ async def lifespan(app: FastAPI):
     yield
     await telegram_app.stop()
     await telegram_app.shutdown()
-    # scheduler.shutdown() # No need to shut down if not started
-    logging.info("Telegram webhook deleted.")
+    scheduler.shutdown()
+    logging.info("Telegram webhook deleted and scheduler shut down.")
 
 app = FastAPI(lifespan=lifespan)
 
