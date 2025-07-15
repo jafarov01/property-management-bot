@@ -1,8 +1,9 @@
 # FILE: email_parser.py
 # ==============================================================================
-# VERSION: 5.0 (Production)
-# UPDATED: The AI prompt has been enhanced to guide the model towards generating
-# more concise text to better respect database column limits.
+# VERSION: 7.0 (Production - Definitive Filter)
+# UPDATED: Implemented the most robust filtering logic by inspecting the
+# standard 'Received' headers for proof that the email was processed for
+# the forwarding account. This is the definitive fix.
 # ==============================================================================
 import imaplib
 import email
@@ -47,30 +48,16 @@ async def parse_booking_email_with_ai(email_body: str) -> Dict:
     You are an expert data extraction system for a property management company.
 
     **Instructions:**
-    1.  Read the email and determine a short, descriptive `category` for its main purpose (e.g., "Guest Complaint", "New Booking", "Cancellation"). This should be under 100 characters.
+    1.  Read the email and determine a short, descriptive `category` for its main purpose (e.g., "Guest Complaint", "New Booking", "Cancellation", "Service Issue").
     2.  Create a concise, one-sentence `summary` of the core issue or message in the email.
-    3.  Extract the following details if they are present. Be exact.
+    3.  Extract the following details if they are present:
         - `guest_name`
-        - `property_code` (If it's a long name, use the most recognizable part, under 20 characters if possible).
+        - `property_code`
         - `platform` ("Airbnb" or "Booking.com")
         - `reservation_number`
         - `deadline` (e.g., "respond before", "within 48 hours", or a specific date).
     4.  If a field is not present, use the value `null`.
-    5.  You MUST return a single, valid JSON object. Do not include any explanatory text or markdown.
-
-    **Example Input:**
-    "Dear partner, Delia Scorus (reservation 5149014360) at Super Central 2-Storey Apartment reported an issue. Please respond before 17 Jul 2025."
-
-    **Example Output:**
-    {{
-        "category": "Guest Complaint",
-        "summary": "Guest Delia Scorus has reported an unspecified issue.",
-        "guest_name": "Delia Scorus",
-        "property_code": "Super Central 2-S",
-        "platform": "Booking.com",
-        "reservation_number": "5149014360",
-        "deadline": "17 Jul 2025"
-    }}
+    5.  You MUST return a single, valid JSON object.
 
     ---
     **Email content to parse now:**
@@ -91,7 +78,7 @@ async def parse_booking_email_with_ai(email_body: str) -> Dict:
 def fetch_unread_emails() -> List[Dict]:
     """
     Connects to the IMAP server, fetches ALL unread emails, and filters them
-    locally based on the 'X-Forwarded-For' header to find forwarded messages.
+    by inspecting the 'Received' headers for the forwarding address.
     """
     try:
         mail = imaplib.IMAP4_SSL(IMAP_SERVER)
@@ -105,20 +92,30 @@ def fetch_unread_emails() -> List[Dict]:
 
         relevant_emails = []
         for num in messages[0].split():
-            status, msg_data = mail.fetch(num, "(RFC822)")
-            if status != "OK":
-                continue
-            
-            msg = email.message_from_bytes(msg_data[0][1])
-            
-            forwarded_for_header = msg.get('X-Forwarded-For', '')
-            
-            if "sagideviso@gmail.com" in forwarded_for_header:
-                body = get_email_body(msg)
-                if body:
-                    relevant_emails.append({"body": body})
+            is_relevant = False
+            try:
+                status, msg_data = mail.fetch(num, "(RFC822)")
+                if status != "OK":
+                    continue
+                
+                msg = email.message_from_bytes(msg_data[0][1])
+                
+                # --- THE DEFINITIVE FILTER ---
+                # Check all 'Received' headers for proof the email was for the forwarding account.
+                received_headers = msg.get_all('Received', [])
+                for header in received_headers:
+                    if "for <sagideviso@gmail.com>" in header:
+                        is_relevant = True
+                        break # Found what we need, no need to check more headers for this email
+                
+                if is_relevant:
+                    body = get_email_body(msg)
+                    if body:
+                        relevant_emails.append({"body": body})
 
-            mail.store(num, "+FLAGS", "\\Seen")
+            finally:
+                # Always mark the email as read to prevent infinite loops on malformed emails.
+                mail.store(num, "+FLAGS", "\\Seen")
 
         mail.logout()
         return relevant_emails

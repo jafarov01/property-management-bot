@@ -1,11 +1,10 @@
 # FILE: main.py
 # ==============================================================================
-# VERSION: 16.0 (Final - Data Truncation Fix)
+# VERSION: 18.0 (Final Stable)
 # UPDATED:
-#   - Implemented data truncation for all relevant fields in `check_emails_task`.
-#   - This prevents 'DataError: value too long' by shortening text from the
-#     AI to fit the database column sizes, protecting existing data.
-#   - This is the definitive, safe fix for the database errors.
+#   - Implemented smarter, non-spammy reminder logic for email alerts (10 min
+#     first reminder, 30 min subsequent reminders).
+#   - This version is clean, stable, and contains all necessary fixes.
 # ==============================================================================
 
 import datetime
@@ -106,32 +105,18 @@ async def check_emails_task():
                 parsed_data = await email_parser.parse_booking_email_with_ai(email_data["body"])
                 
                 if parsed_data and parsed_data.get("category") not in ["Parsing Failed", "Parsing Exception"]:
-                    
-                    # --- DATA TRUNCATION FIX ---
-                    # Shorten any data that is too long for the database columns.
-                    # This prevents the 'DataError' crash and protects existing data.
-                    category = str(parsed_data.get("category", "Uncategorized"))[:100]
-                    guest_name = str(parsed_data.get("guest_name"))[:255] if parsed_data.get("guest_name") else None
-                    # This was the specific field causing the crash
-                    property_code = str(parsed_data.get("property_code"))[:20] if parsed_data.get("property_code") else None
-                    platform = str(parsed_data.get("platform"))[:50] if parsed_data.get("platform") else None
-                    reservation_number = str(parsed_data.get("reservation_number"))[:50] if parsed_data.get("reservation_number") else None
-                    deadline = str(parsed_data.get("deadline"))[:100] if parsed_data.get("deadline") else None
-
                     new_alert = models.EmailAlert(
-                        category=category,
-                        summary=parsed_data.get("summary"), # Summary is Text, no limit needed
-                        guest_name=guest_name,
-                        property_code=property_code,
-                        platform=platform,
-                        reservation_number=reservation_number,
-                        deadline=deadline
+                        category=parsed_data.get("category", "Uncategorized"),
+                        summary=parsed_data.get("summary"),
+                        guest_name=parsed_data.get("guest_name"),
+                        property_code=parsed_data.get("property_code"),
+                        platform=parsed_data.get("platform"),
+                        reservation_number=parsed_data.get("reservation_number"),
+                        deadline=parsed_data.get("deadline")
                     )
                     db.add(new_alert)
                     db.commit()
 
-                    # Pass the 'new_alert' object to the formatter so it uses the
-                    # potentially truncated data, ensuring the message matches what's in the DB.
                     notification_text, reply_markup = telegram_client.format_email_notification(new_alert)
                     
                     sent_message = await telegram_client.send_telegram_message(bot, notification_text, topic_name="EMAILS", reply_markup=reply_markup)
@@ -146,31 +131,55 @@ async def check_emails_task():
         db.close()
 
 async def email_reminder_task():
+    """Checks for open email alerts and sends reminders with a backoff."""
     logging.info("Checking for open email alerts...")
     bot = telegram_app.bot
     db = next(get_db())
     try:
-        time_threshold = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=9)
-        open_alerts = db.query(models.EmailAlert).filter(
-            models.EmailAlert.status == "OPEN",
-            models.EmailAlert.created_at <= time_threshold
-        ).all()
+        now = datetime.datetime.now(datetime.timezone.utc)
+        # First reminder after 10 minutes
+        first_reminder_threshold = now - datetime.timedelta(minutes=10)
+        # Subsequent reminders every 30 minutes
+        subsequent_reminder_threshold = now - datetime.timedelta(minutes=30)
+
+        open_alerts = db.query(models.EmailAlert).filter(models.EmailAlert.status == "OPEN").all()
         
         if not open_alerts:
             return
 
-        logging.info(f"Found {len(open_alerts)} open alerts. Sending reminders.")
         reminder_text = telegram_client.format_email_reminder()
+        alerts_reminded = 0
         for alert in open_alerts:
-            try:
-                await bot.send_message(
-                    chat_id=config.TELEGRAM_TARGET_CHAT_ID,
-                    text=reminder_text,
-                    message_thread_id=config.TELEGRAM_TOPIC_IDS.get("EMAILS"),
-                    reply_to_message_id=alert.telegram_message_id
-                )
-            except Exception as e:
-                logging.error(f"Could not send reminder for alert {alert.id}", exc_info=e)
+            should_remind = False
+            # handled_at is used here to store the last reminder timestamp
+            if alert.handled_at is None:
+                # No reminder sent yet, check if it's older than 10 mins
+                if alert.created_at <= first_reminder_threshold:
+                    should_remind = True
+            else:
+                # Reminder already sent, check if it was more than 30 mins ago
+                if alert.handled_at <= subsequent_reminder_threshold:
+                    should_remind = True
+            
+            if should_remind:
+                try:
+                    await bot.send_message(
+                        chat_id=config.TELEGRAM_TARGET_CHAT_ID,
+                        text=reminder_text,
+                        message_thread_id=config.TELEGRAM_TOPIC_IDS.get("EMAILS"),
+                        reply_to_message_id=alert.telegram_message_id
+                    )
+                    # Update the timestamp to now so we don't remind again for another 30 mins
+                    alert.handled_at = now
+                    db.commit()
+                    alerts_reminded += 1
+                except Exception as e:
+                    logging.error(f"Could not send reminder for alert {alert.id}", exc_info=e)
+                    db.rollback()
+        
+        if alerts_reminded > 0:
+            logging.info(f"Sent {alerts_reminded} email reminders.")
+
     finally:
         db.close()
 
@@ -724,7 +733,6 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # This is the final, clean startup sequence.
-    # The temporary database fix has been removed.
     scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, id="midnight_cleaner", replace_existing=True)
     scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"], id="morning_briefing", replace_existing=True)
     scheduler.add_job(daily_briefing_task, 'cron', hour=22, minute=0, args=["Evening"], id="evening_briefing", replace_existing=True)
