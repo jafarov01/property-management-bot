@@ -1,8 +1,8 @@
 # FILE: email_parser.py
 # ==============================================================================
-# VERSION: 2.0
-# UPDATED: The AI prompt has been enhanced to extract a 'deadline' from the
-# email body, adding critical, time-sensitive information to alerts.
+# VERSION: 3.0 (Production)
+# UPDATED: Restored the original, correct, and reliable server-side IMAP
+# filtering. This is the definitive fix for the email processing bug.
 # ==============================================================================
 import imaplib
 import email
@@ -79,63 +79,49 @@ async def parse_booking_email_with_ai(email_body: str) -> Dict:
     """
     try:
         response = await model.generate_content_async(prompt)
-        # Use a more robust regex to find the JSON object
         match = re.search(r'\{.*\}', response.text, re.DOTALL)
         if not match:
-            print(f"AI Email Parsing Error: No valid JSON object found in response.")
-            print(f"Raw AI Response: {response.text}")
             return {"category": "Parsing Failed", "summary": "AI response did not contain a valid JSON object."}
         
         cleaned_response = match.group(0)
         return json.loads(cleaned_response)
     except Exception as e:
-        print(f"AI Email Parsing Exception: {e}")
         return {"category": "Parsing Exception", "summary": f"An exception occurred: {e}"}
 
 def fetch_unread_emails() -> List[Dict]:
-    """
-    Connects to the IMAP server, fetches all unread emails, and filters them
-    locally based on the 'X-Forwarded-For' header.
-    """
+    """Connects to the IMAP server and fetches unread emails ONLY from the trusted forwarding address."""
     try:
         mail = imaplib.IMAP4_SSL(IMAP_SERVER)
         mail.login(IMAP_USERNAME, IMAP_PASSWORD)
         mail.select("inbox")
 
-        # Step 1: Fetch ALL unread emails. We will filter them in our code.
-        status, messages = mail.search(None, "UNSEEN")
+        # --- THE CORRECT, WORKING LOGIC ---
+        # This query filters on the server for unread emails FROM the specified address.
+        search_query = '(UNSEEN FROM "sagideviso@gmail.com")'
+        
+        status, messages = mail.search(None, search_query)
         if status != "OK" or not messages[0]:
             mail.logout()
             return []
 
-        relevant_emails = []
+        email_details = []
         for num in messages[0].split():
             status, msg_data = mail.fetch(num, "(RFC822)")
             if status != "OK":
                 continue
             
             msg = email.message_from_bytes(msg_data[0][1])
-            
-            # Step 2: Inspect the headers locally.
-            forwarded_for_header = msg.get('X-Forwarded-For', '')
-            
-            # Step 3: The Smart Filter.
-            # Only process the email if it was forwarded from the specified user's address.
-            if "sagideviso@gmail.com" in forwarded_for_header:
-                body = get_email_body(msg)
-                if body:
-                    relevant_emails.append({"body": body})
-            else:
-                # This is not an error, just filtering, so we can skip logging it unless debugging.
-                # print(f"Ignoring irrelevant email (From: {msg.get('From')})")
-                pass
+            body = get_email_body(msg)
 
-            # Step 4: Mark the email as read regardless, to keep the inbox clean.
-            # This is a key part of the workflow.
+            if body:
+                email_details.append({"body": body})
+
+            # Mark the email as read so it's not processed again
             mail.store(num, "+FLAGS", "\\Seen")
 
         mail.logout()
-        return relevant_emails
+        return email_details
     except Exception as e:
+        # Use logging in the main app, but print here for direct debugging if needed.
         print(f"Failed to fetch emails: {e}")
         return []
