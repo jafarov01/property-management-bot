@@ -1,10 +1,9 @@
 # FILE: main.py
 # ==============================================================================
-# VERSION: 15.0 (Temporary DB Fix)
+# VERSION: 13.0 (Final & Stable)
 # UPDATED:
-#   - This script will run ONCE to drop all tables and recreate them with the
-#     new, larger column sizes from models.py v4.0. This is the definitive fix
-#     for all "value too long" errors.
+#   - Removed the temporary database-dropping script from the startup sequence.
+#   - This is the definitive, clean, and complete production version.
 # ==============================================================================
 
 import datetime
@@ -18,7 +17,6 @@ from contextlib import asynccontextmanager
 from difflib import get_close_matches
 from fastapi import FastAPI, Request, Response
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import text
 from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
 from slack_bolt.async_app import AsyncApp
 from telegram import Update, Bot
@@ -42,6 +40,9 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[handler]
 )
+
+# --- Database Initialization ---
+models.Base.metadata.create_all(bind=engine)
 
 # --- Application Instances & Persistent Scheduler ---
 jobstores = {
@@ -201,6 +202,7 @@ async def daily_midnight_task():
     finally:
         db.close()
 
+# --- Core Logic Functions (Slack) ---
 async def process_slack_message(payload: dict):
     db = next(get_db())
     try:
@@ -313,6 +315,7 @@ async def process_slack_message(payload: dict):
     finally:
         db.close()
 
+# --- Telegram Command Handlers ---
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_chat.id, text="\n".join([
         "*Eivissa Operations Bot - Command Manual* 🤖\n",
