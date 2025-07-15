@@ -1,7 +1,7 @@
 # FILE: telegram_client.py
 # ==============================================================================
-# FINAL VERSION: Fixed the "nested entities" error by rebuilding messages
-# from database data instead of editing existing message text.
+# FINAL VERSION: Corrected syntax errors and contains all formatting functions
+# for all features, including the interactive Email Watchdog.
 # ==============================================================================
 
 import datetime
@@ -81,34 +81,40 @@ def format_checkin_error_alert(property_code: str, new_guest: str, prop_status: 
     ]]
     return alert_text, InlineKeyboardMarkup(keyboard)
 
-def format_email_notification(alert_record) -> tuple:
-    """Formats an interactive notification based on a stored email alert record."""
-    title = f"‼️ *URGENT EMAIL: {alert_record.category}* ‼️"
-    platform_info = f"from *{alert_record.platform or 'Unknown'}*"
+def format_email_notification(parsed_data: dict, alert_id: int) -> tuple:
+    """Formats a high-priority, interactive notification based on a parsed email."""
+    category = parsed_data.get("category", "Uncategorized Email")
+    guest = parsed_data.get("guest_name")
+    prop = parsed_data.get("property_code")
+    platform = parsed_data.get("platform")
+    summary = parsed_data.get("summary")
+    reservation_number = parsed_data.get("reservation_number")
+    
+    title = f"‼️ *URGENT EMAIL: {category}* ‼️"
+    platform_info = f"from *{platform or 'Unknown'}*"
     
     message = [f"{title} {platform_info}"]
 
-    if alert_record.summary:
-        message.append(f"\n*Summary:* _{alert_record.summary}_")
+    if summary:
+        message.append(f"\n*Summary:* _{summary}_")
 
     details = []
-    if alert_record.guest_name: details.append(f"  - **Guest:** {alert_record.guest_name}")
-    if alert_record.reservation_number: details.append(f"  - **Reservation #:** `{alert_record.reservation_number}`")
-    if alert_record.property_code: details.append(f"  - **Property:** `{alert_record.property_code}`")
+    if guest: details.append(f"  - **Guest:** {guest}")
+    if reservation_number: details.append(f"  - **Reservation #:** `{reservation_number}`")
+    if prop: details.append(f"  - **Property:** `{prop}`")
     
     if details:
         message.append("\n*Details:*")
         message.extend(details)
 
     keyboard = [[
-        InlineKeyboardButton("✅ Mark as Handled", callback_data=f"handle_email:{alert_record.id}")
+        InlineKeyboardButton("✅ Mark as Handled", callback_data=f"handle_email:{alert_id}")
     ]]
     
     return "\n".join(message), InlineKeyboardMarkup(keyboard)
 
 def format_handled_email_notification(alert_record, handler_name: str) -> str:
     """Rebuilds an email alert message from DB data to show it has been handled."""
-    # De-escalate the alert visually by changing the header
     title = f"📧 *{alert_record.category}* from *{alert_record.platform or 'Unknown'}*"
     message = [title]
 
@@ -145,7 +151,7 @@ def format_available_list(available_props: list, for_relocation_from: str = None
 
 def format_status_report(total: int, occupied: int, available: int, pending_cleaning: int, maintenance: int) -> str:
     return (
-        f"� *Current System Status*\n\n"
+        f"📊 *Current System Status*\n\n"
         f"Total Properties: `{total}`\n"
         f"➡️ Occupied: `{occupied}`\n"
         f"⏳ Pending Cleaning: `{pending_cleaning}`\n"
@@ -278,4 +284,3 @@ def format_invalid_code_alert(invalid_code: str, original_message: str, suggesti
         alert_text += f"*Did you mean one of these?* `{', '.join(suggestions)}`\n\n"
     alert_text += f"The original message was:\n`{original_message}`\n\nPlease check for a typo and re-submit."
     return alert_text
-�
