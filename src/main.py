@@ -1,11 +1,11 @@
 # FILE: main.py
 # ==============================================================================
-# VERSION: 9.0 (Production Clean)
+# VERSION: 10.0 (Stable Production)
 # UPDATED:
-#   - All diagnostic code (heartbeats, schedular resets, verbose logging,
-#     retry loops) has been removed.
-#   - The code has been reverted to its original, clean logic.
-#   - Includes the necessary updates to support the new 'deadline' feature.
+#   - Instructed APScheduler to use a new table ('apscheduler_jobs_v2') to
+#     force a clean start and bypass any corrupted state from old jobs.
+#   - This is the final, stable version based on the original working code,
+#     with the 'deadline' feature correctly integrated.
 # ==============================================================================
 
 import datetime
@@ -13,6 +13,8 @@ import re
 import asyncio
 import time
 import traceback
+import logging
+import sys
 from contextlib import asynccontextmanager
 from difflib import get_close_matches
 from fastapi import FastAPI, Request, Response
@@ -31,12 +33,24 @@ import models
 import email_parser
 from database import get_db, engine
 
+# --- Configure Logging ---
+# Use standard logging to ensure visibility on Render
+handler = logging.StreamHandler(sys.stdout)
+handler.flush = sys.stdout.flush
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[handler]
+)
+
 # --- Database Initialization ---
 models.Base.metadata.create_all(bind=engine)
 
 # --- Application Instances & Persistent Scheduler ---
+# THE FIX: Use a new table name to force a clean state.
 jobstores = {
-    'default': SQLAlchemyJobStore(url=config.DATABASE_URL)
+    'default': SQLAlchemyJobStore(url=config.DATABASE_URL, tablename='apscheduler_jobs_v2')
 }
 scheduler = AsyncIOScheduler(jobstores=jobstores, timezone=config.TIMEZONE)
 
@@ -70,28 +84,19 @@ COMMANDS_HELP_MANUAL = {
 # --- Global Error Handler ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log the error and send a telegram message to notify the developer."""
-    print(f"!!!!!!!!!! EXCEPTION CAUGHT BY GLOBAL HANDLER !!!!!!!!!!")
-    print(f"Update: {update}")
-    print(f"Error: {context.error}")
-    
-    tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
-    tb_string = "".join(tb_list)
-    
+    logging.error("Exception caught by global error handler", exc_info=context.error)
     error_message = (
         f"🚨 *An unexpected error occurred*\n\n"
         f"*Type:* `{type(context.error).__name__}`\n"
         f"*Error:* `{context.error}`\n\n"
         f"Details have been logged for review."
     )
-    
-    print(tb_string)
-    
     await telegram_client.send_telegram_message(context.bot, error_message, topic_name="ISSUES")
 
 # --- Scheduled Tasks ---
 async def check_emails_task():
     """Fetches, parses, and logs unread emails."""
-    print("Running email check...")
+    logging.info("Running email check...")
     bot = telegram_app.bot
     db = next(get_db())
     try:
@@ -99,12 +104,11 @@ async def check_emails_task():
         if not unread_emails:
             return
             
-        print(f"Found {len(unread_emails)} new emails to process.")
+        logging.info(f"Found {len(unread_emails)} new emails to process.")
         for email_data in unread_emails:
             parsed_data = await email_parser.parse_booking_email_with_ai(email_data["body"])
             
             if parsed_data and parsed_data.get("category") not in ["Parsing Failed", "Parsing Exception"]:
-                # Create the alert record in the database, storing all parsed details
                 new_alert = models.EmailAlert(
                     category=parsed_data.get("category", "Uncategorized"),
                     summary=parsed_data.get("summary"),
@@ -112,30 +116,26 @@ async def check_emails_task():
                     property_code=parsed_data.get("property_code"),
                     platform=parsed_data.get("platform"),
                     reservation_number=parsed_data.get("reservation_number"),
-                    deadline=parsed_data.get("deadline") # Save the new deadline field
+                    deadline=parsed_data.get("deadline")
                 )
                 db.add(new_alert)
                 db.commit()
 
-                # Format the message with the button
                 notification_text, reply_markup = telegram_client.format_email_notification(new_alert)
                 
-                # Send the message and get its ID
                 sent_message = await telegram_client.send_telegram_message(bot, notification_text, topic_name="EMAILS", reply_markup=reply_markup)
                 
-                # Save the Telegram message ID to our database record
                 if sent_message:
                     new_alert.telegram_message_id = sent_message.message_id
                     db.commit()
     except Exception as e:
-        print(f"An error occurred in check_emails_task: {e}")
-        traceback.print_exc()
+        logging.error("An error occurred in check_emails_task", exc_info=e)
     finally:
         db.close()
 
 async def email_reminder_task():
     """Checks for open email alerts and sends reminders."""
-    print("Checking for open email alerts...")
+    logging.info("Checking for open email alerts...")
     bot = telegram_app.bot
     db = next(get_db())
     try:
@@ -148,7 +148,7 @@ async def email_reminder_task():
         if not open_alerts:
             return
 
-        print(f"Found {len(open_alerts)} open alerts. Sending reminders.")
+        logging.info(f"Found {len(open_alerts)} open alerts. Sending reminders.")
         reminder_text = telegram_client.format_email_reminder()
         for alert in open_alerts:
             try:
@@ -159,7 +159,7 @@ async def email_reminder_task():
                     reply_to_message_id=alert.telegram_message_id
                 )
             except Exception as e:
-                print(f"Could not send reminder for alert {alert.id}: {e}")
+                logging.error(f"Could not send reminder for alert {alert.id}", exc_info=e)
     finally:
         db.close()
 
@@ -167,10 +167,10 @@ async def send_checkout_reminder(guest_name: str, property_code: str, checkout_d
     bot = telegram_app.bot
     report = telegram_client.format_checkout_reminder_alert(guest_name, property_code, checkout_date)
     await telegram_client.send_telegram_message(bot, report, topic_name="ISSUES")
-    print(f"Sent checkout reminder for {guest_name} in {property_code}.")
+    logging.info(f"Sent checkout reminder for {guest_name} in {property_code}.")
 
 async def daily_briefing_task(time_of_day: str):
-    print(f"Running {time_of_day} briefing...")
+    logging.info(f"Running {time_of_day} briefing...")
     bot = telegram_app.bot
     db = next(get_db())
     try:
@@ -184,12 +184,13 @@ async def daily_briefing_task(time_of_day: str):
         db.close()
 
 async def daily_midnight_task():
+    logging.info("Running midnight task...")
     db = next(get_db())
     bot = telegram_app.bot
     try:
         props_to_make_available = db.query(models.Property).filter(models.Property.status == "PENDING_CLEANING").all()
         if not props_to_make_available:
-            print("Midnight Task: No properties were pending cleaning.")
+            logging.info("Midnight Task: No properties were pending cleaning.")
             return
         prop_codes = [prop.code for prop in props_to_make_available]
         for prop in props_to_make_available:
@@ -199,9 +200,9 @@ async def daily_midnight_task():
                         f"🧹 The following {len(prop_codes)} properties have been cleaned and are now *AVAILABLE* for the new day:\n\n"
                         f"`{', '.join(sorted(prop_codes))}`")
         await telegram_client.send_telegram_message(bot, summary_text, topic_name="GENERAL")
-        print(f"Midnight Task: Set {len(prop_codes)} properties to AVAILABLE.")
+        logging.info(f"Midnight Task: Set {len(prop_codes)} properties to AVAILABLE.")
     except Exception as e:
-        print(f"Error during midnight task: {e}")
+        logging.error("Error during midnight task", exc_info=e)
         await telegram_client.send_telegram_message(bot, f"🚨 Error in scheduled midnight task: {e}", topic_name="ISSUES")
     finally:
         db.close()
@@ -220,15 +221,13 @@ async def process_slack_message(payload: dict):
         message_ts = float(event.get('ts', time.time()))
         list_date_str = datetime.date.fromtimestamp(message_ts).isoformat()
 
-        print(f"MESSAGE RECEIVED from {user_id} in channel {channel_id}: {message_text[:50]}...")
+        logging.info(f"MESSAGE RECEIVED from {user_id} in channel {channel_id}: {message_text[:50]}...")
         bot = telegram_app.bot
         
         all_prop_codes = [p.code for p in db.query(models.Property.code).all()]
 
         if "great reset" in message_text.lower():
-            # This is a dangerous operation and should ideally be moved to a secure, separate script.
-            # For now, keeping it as per original logic but with a strong warning.
-            print("WARNING: 'great reset' command detected. This will wipe the database.")
+            logging.warning("'great reset' command detected. This will wipe the database.")
             for job in scheduler.get_jobs():
                 if job.id.startswith("checkout_reminder_"):
                     job.remove()
@@ -258,7 +257,7 @@ async def process_slack_message(payload: dict):
                     guest_name = booking_data["guest_name"]
 
                     if guest_name in ["N/A", "Unknown Guest"]:
-                        print(f"Skipping booking for {prop_code} due to missing guest name.")
+                        logging.warning(f"Skipping booking for {prop_code} due to missing guest name.")
                         continue
                     if prop_code == "UNKNOWN": continue
 
@@ -301,8 +300,7 @@ async def process_slack_message(payload: dict):
                     db.commit()
                 except Exception as e:
                     db.rollback()
-                    print(f"Error processing a single check-in line: {booking_data}. Error: {e}")
-                    traceback.print_exc()
+                    logging.error(f"Error processing a single check-in line: {booking_data}", exc_info=e)
                     await telegram_client.send_telegram_message(bot, f"⚠️ Failed to process one line of the check-in list: `{booking_data}`. Please check it manually.", topic_name="ISSUES")
 
             if processed_bookings:
@@ -334,9 +332,7 @@ async def process_slack_message(payload: dict):
             await telegram_client.send_telegram_message(bot, receipt_message, topic_name="GENERAL")
     except Exception as e:
         db.rollback()
-        print(f"!!!!!! CRITICAL ERROR IN SLACK PROCESSOR !!!!!!")
-        print(f"Error: {e}")
-        traceback.print_exc()
+        logging.critical("CRITICAL ERROR IN SLACK PROCESSOR", exc_info=e)
     finally:
         db.close()
 
@@ -767,17 +763,17 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(email_reminder_task, 'interval', minutes=10, id="email_reminder", replace_existing=True)
     
     scheduler.start()
-    print("APScheduler started with all tasks scheduled.")
+    logging.info("APScheduler started with all tasks scheduled.")
     await telegram_app.initialize()
     await telegram_app.start()
     webhook_url = f"{config.WEBHOOK_URL}/telegram/webhook"
     await telegram_app.bot.set_webhook(url=webhook_url)
-    print("Telegram webhook set to:", webhook_url)
+    logging.info(f"Telegram webhook set to: {webhook_url}")
     yield
     await telegram_app.stop()
     await telegram_app.shutdown()
     scheduler.shutdown()
-    print("Telegram webhook deleted and scheduler shut down.")
+    logging.info("Telegram webhook deleted and scheduler shut down.")
 
 app = FastAPI(lifespan=lifespan)
 
@@ -796,5 +792,5 @@ async def slack_events_endpoint(req: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    print("Starting application server...")
+    logging.info("Starting application server...")
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
