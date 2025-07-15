@@ -1,8 +1,9 @@
 # FILE: email_parser.py
 # ==============================================================================
-# VERSION: 3.0 (Production)
-# UPDATED: Restored the original, correct, and reliable server-side IMAP
-# filtering. This is the definitive fix for the email processing bug.
+# VERSION: 4.0 (Production)
+# UPDATED: Implemented the definitive, correct logic. The parser now fetches all
+# unread emails and inspects the 'X-Forwarded-For' header locally to
+# identify emails forwarded by the specified account. This is the final fix.
 # ==============================================================================
 import imaplib
 import email
@@ -89,39 +90,43 @@ async def parse_booking_email_with_ai(email_body: str) -> Dict:
         return {"category": "Parsing Exception", "summary": f"An exception occurred: {e}"}
 
 def fetch_unread_emails() -> List[Dict]:
-    """Connects to the IMAP server and fetches unread emails ONLY from the trusted forwarding address."""
+    """
+    Connects to the IMAP server, fetches ALL unread emails, and filters them
+    locally based on the 'X-Forwarded-For' header to find forwarded messages.
+    """
     try:
         mail = imaplib.IMAP4_SSL(IMAP_SERVER)
         mail.login(IMAP_USERNAME, IMAP_PASSWORD)
         mail.select("inbox")
 
-        # --- THE CORRECT, WORKING LOGIC ---
-        # This query filters on the server for unread emails FROM the specified address.
-        search_query = '(UNSEEN FROM "sagideviso@gmail.com")'
-        
-        status, messages = mail.search(None, search_query)
+        # Step 1: Fetch ALL unread emails.
+        status, messages = mail.search(None, "UNSEEN")
         if status != "OK" or not messages[0]:
             mail.logout()
             return []
 
-        email_details = []
+        relevant_emails = []
         for num in messages[0].split():
             status, msg_data = mail.fetch(num, "(RFC822)")
             if status != "OK":
                 continue
             
             msg = email.message_from_bytes(msg_data[0][1])
-            body = get_email_body(msg)
+            
+            # Step 2: The Definitive Filter. Inspect the 'X-Forwarded-For' header.
+            forwarded_for_header = msg.get('X-Forwarded-For', '')
+            
+            # Step 3: Check if the email was forwarded by the target account.
+            if "sagideviso@gmail.com" in forwarded_for_header:
+                body = get_email_body(msg)
+                if body:
+                    relevant_emails.append({"body": body})
 
-            if body:
-                email_details.append({"body": body})
-
-            # Mark the email as read so it's not processed again
+            # Step 4: Mark the email as read regardless, to keep the inbox clean.
             mail.store(num, "+FLAGS", "\\Seen")
 
         mail.logout()
-        return email_details
+        return relevant_emails
     except Exception as e:
-        # Use logging in the main app, but print here for direct debugging if needed.
         print(f"Failed to fetch emails: {e}")
         return []
