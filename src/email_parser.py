@@ -1,9 +1,8 @@
 # FILE: email_parser.py
 # ==============================================================================
-# VERSION: 4.0 (Production)
-# UPDATED: Implemented the definitive, correct logic. The parser now fetches all
-# unread emails and inspects the 'X-Forwarded-For' header locally to
-# identify emails forwarded by the specified account. This is the final fix.
+# VERSION: 5.0 (Production)
+# UPDATED: The AI prompt has been enhanced to guide the model towards generating
+# more concise text to better respect database column limits.
 # ==============================================================================
 import imaplib
 import email
@@ -48,29 +47,29 @@ async def parse_booking_email_with_ai(email_body: str) -> Dict:
     You are an expert data extraction system for a property management company.
 
     **Instructions:**
-    1.  Read the email and determine a short, descriptive `category` for its main purpose (e.g., "Guest Complaint", "New Booking", "Cancellation", "Service Issue").
-    2.  Create a one-sentence `summary` of the core issue or message in the email.
-    3.  Extract the following details if they are present:
+    1.  Read the email and determine a short, descriptive `category` for its main purpose (e.g., "Guest Complaint", "New Booking", "Cancellation"). This should be under 100 characters.
+    2.  Create a concise, one-sentence `summary` of the core issue or message in the email.
+    3.  Extract the following details if they are present. Be exact.
         - `guest_name`
-        - `property_code`
+        - `property_code` (If it's a long name, use the most recognizable part, under 20 characters if possible).
         - `platform` ("Airbnb" or "Booking.com")
-        - `reservation_number` (This is very important. Look for "reservation" or "booking number").
-        - `deadline` (Look for phrases like "respond before", "within X hours", or a specific date and time).
+        - `reservation_number`
+        - `deadline` (e.g., "respond before", "within 48 hours", or a specific date).
     4.  If a field is not present, use the value `null`.
     5.  You MUST return a single, valid JSON object. Do not include any explanatory text or markdown.
 
     **Example Input:**
-    "Dear partner, Delia Scorus has reported an issue experienced at Urban Getaway Lofts during their stay. Reservation details: 5149014360. Please review the customer report and respond within 48 hours (17 Jul 2025 - 10:58 Europe/Budapest)."
+    "Dear partner, Delia Scorus (reservation 5149014360) at Super Central 2-Storey Apartment reported an issue. Please respond before 17 Jul 2025."
 
     **Example Output:**
     {{
         "category": "Guest Complaint",
-        "summary": "Guest Delia Scorus has reported an unspecified issue at Urban Getaway Lofts.",
+        "summary": "Guest Delia Scorus has reported an unspecified issue.",
         "guest_name": "Delia Scorus",
-        "property_code": "Urban Getaway Lofts",
+        "property_code": "Super Central 2-S",
         "platform": "Booking.com",
         "reservation_number": "5149014360",
-        "deadline": "17 Jul 2025 - 10:58"
+        "deadline": "17 Jul 2025"
     }}
 
     ---
@@ -99,7 +98,6 @@ def fetch_unread_emails() -> List[Dict]:
         mail.login(IMAP_USERNAME, IMAP_PASSWORD)
         mail.select("inbox")
 
-        # Step 1: Fetch ALL unread emails.
         status, messages = mail.search(None, "UNSEEN")
         if status != "OK" or not messages[0]:
             mail.logout()
@@ -113,16 +111,13 @@ def fetch_unread_emails() -> List[Dict]:
             
             msg = email.message_from_bytes(msg_data[0][1])
             
-            # Step 2: The Definitive Filter. Inspect the 'X-Forwarded-For' header.
             forwarded_for_header = msg.get('X-Forwarded-For', '')
             
-            # Step 3: Check if the email was forwarded by the target account.
             if "sagideviso@gmail.com" in forwarded_for_header:
                 body = get_email_body(msg)
                 if body:
                     relevant_emails.append({"body": body})
 
-            # Step 4: Mark the email as read regardless, to keep the inbox clean.
             mail.store(num, "+FLAGS", "\\Seen")
 
         mail.logout()

@@ -1,9 +1,11 @@
 # FILE: main.py
 # ==============================================================================
-# VERSION: 13.0 (Final & Stable)
+# VERSION: 16.0 (Final - Data Truncation Fix)
 # UPDATED:
-#   - Removed the temporary database-dropping script from the startup sequence.
-#   - This is the definitive, clean, and complete production version.
+#   - Implemented data truncation for all relevant fields in `check_emails_task`.
+#   - This prevents 'DataError: value too long' by shortening text from the
+#     AI to fit the database column sizes, protecting existing data.
+#   - This is the definitive, safe fix for the database errors.
 # ==============================================================================
 
 import datetime
@@ -104,18 +106,32 @@ async def check_emails_task():
                 parsed_data = await email_parser.parse_booking_email_with_ai(email_data["body"])
                 
                 if parsed_data and parsed_data.get("category") not in ["Parsing Failed", "Parsing Exception"]:
+                    
+                    # --- DATA TRUNCATION FIX ---
+                    # Shorten any data that is too long for the database columns.
+                    # This prevents the 'DataError' crash and protects existing data.
+                    category = str(parsed_data.get("category", "Uncategorized"))[:100]
+                    guest_name = str(parsed_data.get("guest_name"))[:255] if parsed_data.get("guest_name") else None
+                    # This was the specific field causing the crash
+                    property_code = str(parsed_data.get("property_code"))[:20] if parsed_data.get("property_code") else None
+                    platform = str(parsed_data.get("platform"))[:50] if parsed_data.get("platform") else None
+                    reservation_number = str(parsed_data.get("reservation_number"))[:50] if parsed_data.get("reservation_number") else None
+                    deadline = str(parsed_data.get("deadline"))[:100] if parsed_data.get("deadline") else None
+
                     new_alert = models.EmailAlert(
-                        category=parsed_data.get("category", "Uncategorized"),
-                        summary=parsed_data.get("summary"),
-                        guest_name=parsed_data.get("guest_name"),
-                        property_code=parsed_data.get("property_code"),
-                        platform=parsed_data.get("platform"),
-                        reservation_number=parsed_data.get("reservation_number"),
-                        deadline=parsed_data.get("deadline")
+                        category=category,
+                        summary=parsed_data.get("summary"), # Summary is Text, no limit needed
+                        guest_name=guest_name,
+                        property_code=property_code,
+                        platform=platform,
+                        reservation_number=reservation_number,
+                        deadline=deadline
                     )
                     db.add(new_alert)
                     db.commit()
 
+                    # Pass the 'new_alert' object to the formatter so it uses the
+                    # potentially truncated data, ensuring the message matches what's in the DB.
                     notification_text, reply_markup = telegram_client.format_email_notification(new_alert)
                     
                     sent_message = await telegram_client.send_telegram_message(bot, notification_text, topic_name="EMAILS", reply_markup=reply_markup)
