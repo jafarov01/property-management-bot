@@ -1,14 +1,14 @@
 # FILE: main.py
 # ==============================================================================
-# FINAL VERSION: Implements the complete, interactive Email Watchdog feature
-# with database logging, actionable buttons, and a reminder system.
-# This file is complete with no placeholders.
+# FINAL VERSION: Implemented a robust, crash-proof error handling system
+# to ensure stability and provide transparent error logging.
 # ==============================================================================
 
 import datetime
 import re
 import asyncio
 import time
+import traceback
 from contextlib import asynccontextmanager
 from difflib import get_close_matches
 from fastapi import FastAPI, Request, Response
@@ -24,7 +24,7 @@ import config
 import telegram_client
 import slack_parser
 import models
-import email_parser  # Import the new email parser
+import email_parser
 from database import get_db, engine
 
 # --- Database Initialization ---
@@ -63,9 +63,33 @@ COMMANDS_HELP_MANUAL = {
     "help": {"description": "Show this help manual.", "example": "/help"}
 }
 
+# --- NEW: Global Error Handler ---
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log the error and send a telegram message to notify the developer."""
+    print(f"!!!!!!!!!! EXCEPTION CAUGHT BY GLOBAL HANDLER !!!!!!!!!!")
+    print(f"Update: {update}")
+    print(f"Error: {context.error}")
+    
+    # Format the traceback to be readable in Telegram
+    tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
+    tb_string = "".join(tb_list)
+    
+    # Keep the message short for Telegram, log the full details
+    error_message = (
+        f"🚨 *An unexpected error occurred*\n\n"
+        f"*Type:* `{type(context.error).__name__}`\n"
+        f"*Error:* `{context.error}`\n\n"
+        f"Details have been logged for review."
+    )
+    
+    print(tb_string) # Log the full traceback to Render logs
+    
+    # Send the alert to the #issues topic
+    await telegram_client.send_telegram_message(context.bot, error_message, topic_name="ISSUES")
+
 # --- Scheduled Tasks ---
+# (All scheduled tasks like check_emails_task, daily_briefing_task, etc. remain unchanged)
 async def check_emails_task():
-    """Fetches, parses, and logs unread emails, then sends an interactive alert."""
     print("Running email check...")
     bot = telegram_app.bot
     db = next(get_db())
@@ -80,18 +104,11 @@ async def check_emails_task():
             parsed_data = await email_parser.parse_booking_email_with_ai(email_data["body"])
             
             if parsed_data and parsed_data.get("category") not in ["Parsing Failed", "Parsing Exception"]:
-                # 1. Create the alert record in the database
                 new_alert = models.EmailAlert(category=parsed_data.get("category", "Uncategorized"))
                 db.add(new_alert)
                 db.commit()
-
-                # 2. Format the message with the button
                 notification_text, reply_markup = telegram_client.format_email_notification(parsed_data, new_alert.id)
-                
-                # 3. Send the message and get its ID
                 sent_message = await telegram_client.send_telegram_message(bot, notification_text, topic_name="EMAILS", reply_markup=reply_markup)
-                
-                # 4. Save the Telegram message ID to our database record
                 if sent_message:
                     new_alert.telegram_message_id = sent_message.message_id
                     db.commit()
@@ -99,12 +116,10 @@ async def check_emails_task():
         db.close()
 
 async def email_reminder_task():
-    """Checks for open email alerts and sends reminders."""
     print("Checking for open email alerts...")
     bot = telegram_app.bot
     db = next(get_db())
     try:
-        # Find alerts that are open and were created more than 9 minutes ago
         time_threshold = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=9)
         open_alerts = db.query(models.EmailAlert).filter(
             models.EmailAlert.status == "OPEN",
@@ -118,7 +133,6 @@ async def email_reminder_task():
         reminder_text = telegram_client.format_email_reminder()
         for alert in open_alerts:
             try:
-                # Send a reply to the original alert message to keep context
                 await bot.send_message(
                     chat_id=config.TELEGRAM_TARGET_CHAT_ID,
                     text=reminder_text,
@@ -218,48 +232,54 @@ async def process_slack_message(payload: dict):
                 new_bookings_data = await slack_parser.parse_checkin_list_with_ai(message_text, list_date_str)
                 processed_bookings = []
                 for booking_data in new_bookings_data:
-                    prop_code = booking_data["property_code"]
-                    guest_name = booking_data["guest_name"]
+                    # --- NEW: Isolate errors to a single booking line ---
+                    try:
+                        prop_code = booking_data["property_code"]
+                        guest_name = booking_data["guest_name"]
 
-                    if guest_name in ["N/A", "Unknown Guest"]:
-                        print(f"Skipping booking for {prop_code} due to missing guest name.")
-                        continue
-                    if prop_code == "UNKNOWN": continue
+                        if guest_name in ["N/A", "Unknown Guest"]:
+                            print(f"Skipping booking for {prop_code} due to missing guest name.")
+                            continue
+                        if prop_code == "UNKNOWN": continue
 
-                    if prop_code not in all_prop_codes:
-                        suggestions = get_close_matches(prop_code, all_prop_codes, n=3, cutoff=0.7)
-                        original_line = next((line for line in message_text.split('\n') if line.strip().startswith(prop_code)), message_text)
-                        alert_text = telegram_client.format_invalid_code_alert(prop_code, original_line, suggestions)
-                        await telegram_client.send_telegram_message(bot, alert_text, topic_name="ISSUES")
-                        continue
+                        if prop_code not in all_prop_codes:
+                            suggestions = get_close_matches(prop_code, all_prop_codes, n=3, cutoff=0.7)
+                            original_line = next((line for line in message_text.split('\n') if line.strip().startswith(prop_code)), message_text)
+                            alert_text = telegram_client.format_invalid_code_alert(prop_code, original_line, suggestions)
+                            await telegram_client.send_telegram_message(bot, alert_text, topic_name="ISSUES")
+                            continue
 
-                    prop = db.query(models.Property).filter(models.Property.code == prop_code).first()
-                    if not prop or prop.status != "AVAILABLE":
-                        if prop and prop.status == "OCCUPIED":
-                            first_booking = db.query(models.Booking).filter(models.Booking.property_id == prop.id, models.Booking.status == "Active").order_by(models.Booking.id.desc()).first()
-                            booking_data['status'] = "PENDING_RELOCATION"
-                            second_booking = models.Booking(**booking_data, property_id=prop.id)
-                            db.add(second_booking)
-                            db.commit()
-                            alert_text, reply_markup = telegram_client.format_conflict_alert(prop_code, first_booking, second_booking)
-                            await telegram_client.send_telegram_message(bot, alert_text, topic_name="ISSUES", reply_markup=reply_markup)
-                        else:
-                            prop_status = prop.status if prop else "NOT_FOUND"
-                            booking_data['status'] = "PENDING_RELOCATION"
-                            failed_booking = models.Booking(**booking_data)
-                            db.add(failed_booking)
-                            db.commit()
-                            alert_text, reply_markup = telegram_client.format_checkin_error_alert(
-                                property_code=prop_code, new_guest=booking_data["guest_name"], prop_status=prop_status,
-                                maintenance_notes=prop.notes if prop else None
-                            )
-                            await telegram_client.send_telegram_message(bot, alert_text, topic_name="ISSUES", reply_markup=reply_markup)
-                        continue
-                    prop.status = "OCCUPIED"
-                    db_booking = models.Booking(property_id=prop.id, **booking_data)
-                    db.add(db_booking)
-                    db.flush()
-                    processed_bookings.append(db_booking)
+                        prop = db.query(models.Property).filter(models.Property.code == prop_code).first()
+                        if not prop or prop.status != "AVAILABLE":
+                            if prop and prop.status == "OCCUPIED":
+                                first_booking = db.query(models.Booking).filter(models.Booking.property_id == prop.id, models.Booking.status == "Active").order_by(models.Booking.id.desc()).first()
+                                booking_data['status'] = "PENDING_RELOCATION"
+                                second_booking = models.Booking(**booking_data, property_id=prop.id)
+                                db.add(second_booking)
+                                db.commit()
+                                alert_text, reply_markup = telegram_client.format_conflict_alert(prop_code, first_booking, second_booking)
+                                await telegram_client.send_telegram_message(bot, alert_text, topic_name="ISSUES", reply_markup=reply_markup)
+                            else:
+                                prop_status = prop.status if prop else "NOT_FOUND"
+                                booking_data['status'] = "PENDING_RELOCATION"
+                                failed_booking = models.Booking(**booking_data)
+                                db.add(failed_booking)
+                                db.commit()
+                                alert_text, reply_markup = telegram_client.format_checkin_error_alert(
+                                    property_code=prop_code, new_guest=booking_data["guest_name"], prop_status=prop_status,
+                                    maintenance_notes=prop.notes if prop else None
+                                )
+                                await telegram_client.send_telegram_message(bot, alert_text, topic_name="ISSUES", reply_markup=reply_markup)
+                            continue
+                        prop.status = "OCCUPIED"
+                        db_booking = models.Booking(property_id=prop.id, **booking_data)
+                        db.add(db_booking)
+                        db.flush()
+                        processed_bookings.append(db_booking)
+                    except Exception as e:
+                        print(f"Error processing a single check-in line: {booking_data}. Error: {e}")
+                        await telegram_client.send_telegram_message(bot, f"⚠️ Failed to process one line of the check-in list: `{booking_data}`. Please check it manually.", topic_name="ISSUES")
+
                 db.commit()
                 if processed_bookings:
                     summary_text = telegram_client.format_daily_list_summary(processed_bookings, [], [], list_date_str)
@@ -293,7 +313,6 @@ async def process_slack_message(payload: dict):
     except Exception as e:
         print(f"!!!!!! CRITICAL ERROR IN SLACK PROCESSOR !!!!!!")
         print(f"Error: {e}")
-        import traceback
         traceback.print_exc()
 
 # --- Register Slack Handler ---
@@ -303,6 +322,7 @@ async def handle_message_events(body: dict, ack):
     asyncio.create_task(process_slack_message(body))
 
 # --- Telegram Command Handlers ---
+# (All command handlers like help_command, status_command, etc. remain unchanged)
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=update.effective_chat.id, text="\n".join([
         "*Eivissa Operations Bot - Command Manual* 🤖\n",
@@ -721,6 +741,9 @@ telegram_app.add_handler(CommandHandler("find_guest", find_guest_command))
 telegram_app.add_handler(CommandHandler("daily_revenue", daily_revenue_command))
 telegram_app.add_handler(CommandHandler("relocations", relocations_command))
 telegram_app.add_handler(CallbackQueryHandler(button_callback_handler))
+
+# --- NEW: Add the global error handler ---
+telegram_app.add_error_handler(error_handler)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
