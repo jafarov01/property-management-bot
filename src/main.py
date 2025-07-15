@@ -1,10 +1,9 @@
 # FILE: main.py
 # ==============================================================================
-# VERSION: 5.0
+# VERSION: 6.0 (Diagnostic)
 # UPDATED:
-#   - Added a TEMPORARY one-time startup script to clear the 'apscheduler_jobs'
-#     table. This is a definitive fix for a corrupted scheduler state without
-#     needing a paid shell.
+#   - TEMPORARILY disabled the scheduler by commenting out `scheduler.start()`.
+#   - This is a diagnostic step to confirm and kill any "ghost" processes.
 # ==============================================================================
 
 import datetime
@@ -16,7 +15,7 @@ from contextlib import asynccontextmanager
 from difflib import get_close_matches
 from fastapi import FastAPI, Request, Response
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import text # Import the 'text' function
+from sqlalchemy import text
 from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
 from slack_bolt.async_app import AsyncApp
 from telegram import Update
@@ -85,7 +84,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     )
     await telegram_client.send_telegram_message(context.bot, error_message, topic_name="ISSUES")
 
-# --- Scheduled Tasks (No changes) ---
+# --- Scheduled Tasks (Will not run in this version) ---
 async def scheduler_heartbeat():
     logging.info("--- APScheduler Heartbeat: Still Alive ---")
 
@@ -766,27 +765,19 @@ telegram_app.add_error_handler(error_handler)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # --- TEMPORARY SCHEDULER RESET SCRIPT ---
-    try:
-        logging.info("Attempting to clear scheduler jobs table for a clean start...")
-        with engine.connect() as connection:
-            with connection.begin():
-                # Use TRUNCATE for a clean and fast reset.
-                connection.execute(text("TRUNCATE TABLE apscheduler_jobs;"))
-            logging.info("Successfully cleared 'apscheduler_jobs' table.")
-    except Exception as e:
-        logging.warning(f"Could not clear 'apscheduler_jobs' table (this is okay if it's the first run): {e}")
-
-    # --- Add all jobs to the now-clean scheduler ---
-    scheduler.add_job(scheduler_heartbeat, 'interval', minutes=1, id="heartbeat", replace_existing=True)
-    scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, id="midnight_cleaner", replace_existing=True)
-    scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"], id="morning_briefing", replace_existing=True)
-    scheduler.add_job(daily_briefing_task, 'cron', hour=22, minute=0, args=["Evening"], id="evening_briefing", replace_existing=True)
-    scheduler.add_job(check_emails_task, 'interval', minutes=5, id="email_checker", replace_existing=True)
-    scheduler.add_job(email_reminder_task, 'interval', minutes=10, id="email_reminder", replace_existing=True)
+    # --- DIAGNOSTIC: SCHEDULER IS DISABLED ---
+    logging.warning("DIAGNOSTIC MODE: The scheduler is currently disabled to test for ghost processes.")
     
-    scheduler.start()
-    logging.info("APScheduler started with all tasks scheduled (including heartbeat).")
+    # scheduler.add_job(scheduler_heartbeat, 'interval', minutes=1, id="heartbeat", replace_existing=True)
+    # scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, id="midnight_cleaner", replace_existing=True)
+    # scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"], id="morning_briefing", replace_existing=True)
+    # scheduler.add_job(daily_briefing_task, 'cron', hour=22, minute=0, args=["Evening"], id="evening_briefing", replace_existing=True)
+    # scheduler.add_job(check_emails_task, 'interval', minutes=5, id="email_checker", replace_existing=True)
+    # scheduler.add_job(email_reminder_task, 'interval', minutes=10, id="email_reminder", replace_existing=True)
+    
+    # scheduler.start() # <-- THIS LINE IS COMMENTED OUT
+    
+    logging.info("APScheduler is NOT started.")
     await telegram_app.initialize()
     await telegram_app.start()
     webhook_url = f"{config.WEBHOOK_URL}/telegram/webhook"
@@ -795,8 +786,8 @@ async def lifespan(app: FastAPI):
     yield
     await telegram_app.stop()
     await telegram_app.shutdown()
-    scheduler.shutdown()
-    logging.info("Telegram webhook deleted and scheduler shut down.")
+    # scheduler.shutdown() # No need to shut down if not started
+    logging.info("Telegram webhook deleted.")
 
 app = FastAPI(lifespan=lifespan)
 
