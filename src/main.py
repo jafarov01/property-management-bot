@@ -1,11 +1,8 @@
 # FILE: main.py
 # ==============================================================================
-# VERSION: 10.0 (Stable Production)
-# UPDATED:
-#   - Instructed APScheduler to use a new table ('apscheduler_jobs_v2') to
-#     force a clean start and bypass any corrupted state from old jobs.
-#   - This is the final, stable version based on the original working code,
-#     with the 'deadline' feature correctly integrated.
+# VERSION: 11.0 (Final Stable)
+# This is the definitive, clean version based on the original working code,
+# with the 'deadline' feature and robust error handling integrated.
 # ==============================================================================
 
 import datetime
@@ -34,7 +31,6 @@ import email_parser
 from database import get_db, engine
 
 # --- Configure Logging ---
-# Use standard logging to ensure visibility on Render
 handler = logging.StreamHandler(sys.stdout)
 handler.flush = sys.stdout.flush
 logging.basicConfig(
@@ -48,9 +44,8 @@ logging.basicConfig(
 models.Base.metadata.create_all(bind=engine)
 
 # --- Application Instances & Persistent Scheduler ---
-# THE FIX: Use a new table name to force a clean state.
 jobstores = {
-    'default': SQLAlchemyJobStore(url=config.DATABASE_URL, tablename='apscheduler_jobs_v2')
+    'default': SQLAlchemyJobStore(url=config.DATABASE_URL)
 }
 scheduler = AsyncIOScheduler(jobstores=jobstores, timezone=config.TIMEZONE)
 
