@@ -1,9 +1,7 @@
-# FILE: email_parser.py
-# ==============================================================================
-# VERSION: 7.0 (Production - Definitive Filter)
-# UPDATED: Implemented the most robust filtering logic by inspecting the
-# standard 'Received' headers for proof that the email was processed for
-# the forwarding account. This is the definitive fix.
+# FILE: app/email_parser.py
+# VERSION: 8.0 (Production - No Filter)
+# UPDATED: The email fetching logic has been updated to capture every single
+# unread email in the inbox, removing all previous header-based filtering.
 # ==============================================================================
 import imaplib
 import email
@@ -12,7 +10,7 @@ from typing import List, Dict
 import re
 import json
 import google.generativeai as genai
-from config import GEMINI_API_KEY, IMAP_SERVER, IMAP_USERNAME, IMAP_PASSWORD
+from .config import GEMINI_API_KEY, IMAP_SERVER, IMAP_USERNAME, IMAP_PASSWORD
 
 # --- AI Configuration ---
 genai.configure(api_key=GEMINI_API_KEY)
@@ -66,6 +64,7 @@ async def parse_booking_email_with_ai(email_body: str) -> Dict:
     """
     try:
         response = await model.generate_content_async(prompt)
+        # Use regex to find a JSON object within the response text
         match = re.search(r'\{.*\}', response.text, re.DOTALL)
         if not match:
             return {"category": "Parsing Failed", "summary": "AI response did not contain a valid JSON object."}
@@ -77,22 +76,21 @@ async def parse_booking_email_with_ai(email_body: str) -> Dict:
 
 def fetch_unread_emails() -> List[Dict]:
     """
-    Connects to the IMAP server, fetches ALL unread emails, and filters them
-    by inspecting the 'Received' headers for the forwarding address.
+    Connects to the IMAP server and fetches ALL unread emails without any filtering.
     """
     try:
         mail = imaplib.IMAP4_SSL(IMAP_SERVER)
         mail.login(IMAP_USERNAME, IMAP_PASSWORD)
         mail.select("inbox")
 
+        # Search for all unseen emails
         status, messages = mail.search(None, "UNSEEN")
         if status != "OK" or not messages[0]:
             mail.logout()
             return []
 
-        relevant_emails = []
+        all_unread_emails = []
         for num in messages[0].split():
-            is_relevant = False
             try:
                 status, msg_data = mail.fetch(num, "(RFC822)")
                 if status != "OK":
@@ -100,25 +98,18 @@ def fetch_unread_emails() -> List[Dict]:
                 
                 msg = email.message_from_bytes(msg_data[0][1])
                 
-                # --- THE DEFINITIVE FILTER ---
-                # Check all 'Received' headers for proof the email was for the forwarding account.
-                received_headers = msg.get_all('Received', [])
-                for header in received_headers:
-                    if "for <sagideviso@gmail.com>" in header:
-                        is_relevant = True
-                        break # Found what we need, no need to check more headers for this email
-                
-                if is_relevant:
-                    body = get_email_body(msg)
-                    if body:
-                        relevant_emails.append({"body": body})
+                # --- NO FILTER APPLIED ---
+                # Process every fetched email. The previous header check has been removed.
+                body = get_email_body(msg)
+                if body:
+                    all_unread_emails.append({"body": body})
 
             finally:
-                # Always mark the email as read to prevent infinite loops on malformed emails.
+                # Always mark the email as read to prevent infinite loops, even if processing fails.
                 mail.store(num, "+FLAGS", "\\Seen")
 
         mail.logout()
-        return relevant_emails
+        return all_unread_emails
     except Exception as e:
         print(f"Failed to fetch emails: {e}")
         return []

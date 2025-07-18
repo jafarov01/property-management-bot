@@ -41,21 +41,24 @@ def format_daily_list_summary(checkins: list, cleanings: list, pending_cleanings
         message.append(f"  • `{'`, `'.join(pending_cleanings)}`")
     return "\n".join(message)
 
-def format_conflict_alert(prop_code: str, first_booking, second_booking) -> tuple:
+def format_conflict_alert(prop_code: str, active_booking: Booking, pending_booking: Booking) -> tuple:
+    """Formats the interactive alert for an overbooking conflict."""
     readable_date = datetime.datetime.now().strftime('%B %d, %Y')
     alert_text = (
         f"*{readable_date}*\n🚨 *OVERBOOKING CONFLICT* for `{prop_code}` 🚨\n\n"
-        f"Two bookings exist for the same property. Please choose which guest to relocate.\n\n"
-        f"1️⃣ *First Guest (Currently Active):*\n"
-        f"  - Name: *{first_booking.guest_name}*\n"
-        f"  - Platform: `{first_booking.platform}`\n\n"
-        f"2️⃣ *Second Guest (Pending Relocation):*\n"
-        f"  - Name: *{second_booking.guest_name}*\n"
-        f"  - Platform: `{second_booking.platform}`\n\n"
-        f"To resolve, use `/relocate {prop_code} [new_room] [YYYY-MM-DD]`."
+        f"Two bookings exist for the same property. Please take action.\n\n"
+        f"➡️ *Active Guest:*\n"
+        f"  - Name: *{active_booking.guest_name}*\n"
+        f"  - Platform: `{active_booking.platform}`\n\n"
+        f"⏳ *Pending Guest:*\n"
+        f"  - Name: *{pending_booking.guest_name}*\n"
+        f"  - Platform: `{pending_booking.platform}`\n\n"
+        f"To resolve, use the buttons below or the `/relocate` command."
     )
     keyboard = [[
-        InlineKeyboardButton(f"Keep 2nd Guest (Relocate {first_booking.guest_name})", callback_data=f"swap_relocation:{first_booking.id}:{second_booking.id}"),
+        InlineKeyboardButton(f"Swap (Make {pending_booking.guest_name} Active)", callback_data=f"swap_relocation:{active_booking.id}:{pending_booking.id}"),
+    ], [
+        InlineKeyboardButton(f"Cancel Pending Guest ({pending_booking.guest_name})", callback_data=f"cancel_pending_relocation:{pending_booking.id}"),
     ], [
         InlineKeyboardButton("Show Available Rooms", callback_data=f"show_available:{prop_code}")
     ]]
@@ -87,8 +90,9 @@ def format_email_notification(alert_record: EmailAlert) -> tuple:
     """Formats a high-priority, interactive notification based on a parsed email."""
     title = f"‼️ *URGENT EMAIL: {alert_record.category}* ‼️"
     platform_info = f"from *{alert_record.platform or 'Unknown'}*"
-    
-    message = [f"{title} {platform_info}"]
+    mention = "@La1038" # User to be mentioned
+
+    message = [f"{title} {platform_info} {mention}"]
 
     if alert_record.summary:
         message.append(f"\n*Summary:* _{alert_record.summary}_")
@@ -97,20 +101,28 @@ def format_email_notification(alert_record: EmailAlert) -> tuple:
     if alert_record.guest_name: details.append(f"  - **Guest:** {alert_record.guest_name}")
     if alert_record.reservation_number: details.append(f"  - **Reservation #:** `{alert_record.reservation_number}`")
     if alert_record.property_code: details.append(f"  - **Property:** `{alert_record.property_code}`")
-    
+
     if details:
         message.append("\n*Details:*")
         message.extend(details)
 
-    # --- NEW: Add deadline if it exists ---
     if alert_record.deadline:
         message.append(f"\n⚠️ *DEADLINE:* `{alert_record.deadline}`")
 
     keyboard = [[
         InlineKeyboardButton("✅ Mark as Handled", callback_data=f"handle_email:{alert_record.id}")
     ]]
-    
+
     return "\n".join(message), InlineKeyboardMarkup(keyboard)
+
+def format_parsing_failure_alert(summary: str) -> str:
+    """Formats a non-interactive alert for when AI email parsing fails."""
+    return (
+        f"🚨 *AI Email Parsing Failure* 🚨\n\n"
+        f"The AI system failed to process an email.\n\n"
+        f"*Reason:* _{summary}_\n\n"
+        f"Please check the `eivissateam@gmail.com` inbox for an unread email that requires manual attention."
+    )
 
 def format_handled_email_notification(alert_record: EmailAlert, handler_name: str) -> str:
     """Rebuilds an email alert message from DB data to show it has been handled."""
@@ -136,6 +148,20 @@ def format_handled_email_notification(alert_record: EmailAlert, handler_name: st
     timestamp = alert_record.handled_at.strftime('%Y-%m-%d %H:%M')
     message.append(f"\n---\n✅ *Handled by {handler_name} at {timestamp}*")
     
+    return "\n".join(message)
+
+def format_unresolved_relocations_alert(bookings: list) -> str:
+    """Formats a high-priority alert listing all unresolved relocations."""
+    message = [
+        "‼️ *DAILY REMINDER: Unresolved Relocations* ‼️\n",
+        "The following guests have been pending relocation for over 6 hours and require immediate action:\n"
+    ]
+    for booking in bookings:
+        message.append(f"  - *Guest:* {booking.guest_name}")
+        message.append(f"    *Conflict Property:* `{booking.property_code}`")
+        message.append(f"    *Created:* `{booking.created_at.strftime('%Y-%m-%d %H:%M')}` UTC\n")
+    
+    message.append("Please use the `/relocate` command or the buttons in the original alert to resolve these cases.")
     return "\n".join(message)
 
 def format_email_reminder() -> str:
