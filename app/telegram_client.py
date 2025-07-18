@@ -8,8 +8,8 @@
 import datetime
 import telegram
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from config import TELEGRAM_TARGET_CHAT_ID, TELEGRAM_TOPIC_IDS
-from models import EmailAlert # Import the model for type hinting
+from .config import TELEGRAM_TARGET_CHAT_ID, TELEGRAM_TOPIC_IDS # CORRECTED LINE
+from . import models # CORRECTED LINE
 
 async def send_telegram_message(bot: telegram.Bot, text: str, topic_name: str = "GENERAL", reply_markup=None, parse_mode: str = 'Markdown'):
     """Sends a message to a specific topic and returns the sent message object."""
