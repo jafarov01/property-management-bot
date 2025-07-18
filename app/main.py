@@ -11,14 +11,14 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 from . import config, models, telegram_client
-from .database import engine
+from .database import engine, SessionLocal
 from . import telegram_handlers
 from . import slack_handler as slack_processor
 from .scheduled_tasks import (
     scheduler, daily_midnight_task, daily_briefing_task,
-    check_emails_task, email_reminder_task
+    check_emails_task, email_reminder_task, check_pending_relocations_task
 )
-from sqlalchemy import text
+from .utils.db_manager import db_session_manager
 
 # --- Configure Logging ---
 handler = logging.StreamHandler(sys.stdout)
