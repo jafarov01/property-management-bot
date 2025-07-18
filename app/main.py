@@ -4,7 +4,7 @@ import sys
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Response, Depends # <-- FIX: Import Depends
+from fastapi import FastAPI, Request, Response, Depends  # <-- FIX: Import Depends
 from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
 from slack_bolt.async_app import AsyncApp
 from sqlalchemy.orm import Session
@@ -21,6 +21,7 @@ from .scheduled_tasks import (
     check_emails_task, email_reminder_task, check_pending_relocations_task
 )
 from .utils.db_manager import db_session_manager
+
 # --- Configure Logging ---
 handler = logging.StreamHandler(sys.stdout)
 handler.flush = sys.stdout.flush
@@ -57,14 +58,13 @@ async def lifespan(app: FastAPI):
     """Handles application startup and shutdown events."""
     bot = telegram_app.bot
     # Schedule all jobs, passing the bot instance to tasks that need it
-	scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, id="midnight_cleaner", replace_existing=True) # FIX: args removed
-	scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"], id="morning_briefing", replace_existing=True) # FIX: bot arg removed
-	scheduler.add_job(daily_briefing_task, 'cron', hour=22, minute=0, args=["Evening"], id="evening_briefing", replace_existing=True) # FIX: bot arg removed
-	scheduler.add_job(check_emails_task, 'interval', minutes=5, id="email_checker", replace_existing=True) # FIX: args removed
-	scheduler.add_job(email_reminder_task, 'interval', minutes=10, id="email_reminder", replace_existing=True) # FIX: args removed
-	scheduler.add_job(check_pending_relocations_task, 'cron', hour=12, minute=0, id="relocation_checker", replace_existing=True) # FIX: args removed
 
-
+    scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, id="midnight_cleaner", replace_existing=True)  # FIX: args removed
+    scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"], id="morning_briefing", replace_existing=True)  # FIX: bot arg removed
+    scheduler.add_job(daily_briefing_task, 'cron', hour=22, minute=0, args=["Evening"], id="evening_briefing", replace_existing=True)  # FIX: bot arg removed
+    scheduler.add_job(check_emails_task, 'interval', minutes=5, id="email_checker", replace_existing=True)  # FIX: args removed
+    scheduler.add_job(email_reminder_task, 'interval', minutes=10, id="email_reminder", replace_existing=True)  # FIX: args removed
+    scheduler.add_job(check_pending_relocations_task, 'cron', hour=12, minute=0, id="relocation_checker", replace_existing=True)  # FIX: args removed
     scheduler.start()
     logging.info("APScheduler started with all tasks scheduled.")
     
