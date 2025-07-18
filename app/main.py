@@ -4,7 +4,7 @@ import sys
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, Depends # <-- FIX: Import Depends
 from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
 from slack_bolt.async_app import AsyncApp
 from sqlalchemy.orm import Session
@@ -13,7 +13,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 from . import config, models, telegram_client
-from .database import engine, SessionLocal
+from .database import engine, SessionLocal, get_db
 from . import telegram_handlers
 from . import slack_handler as slack_processor
 from .scheduled_tasks import (
@@ -123,15 +123,13 @@ async def handle_message_events(body: dict, ack):
 # --- API Endpoints ---
 
 @app.get("/_secret_migration_v5_add_reminders_sent")
-@db_session_manager
-async def perform_migration(db: Session):
+async def perform_migration(db: Session = Depends(get_db)):
     """
     A temporary, one-time endpoint to apply database schema changes.
     This should be removed after the migration is successfully applied.
     """
     try:
         # SQL command to add the new column if it doesn't already exist.
-        # This makes the endpoint safe to run multiple times.
         sql_command = text("""
             DO $$
             BEGIN
@@ -146,9 +144,10 @@ async def perform_migration(db: Session):
         logging.info("Migration successful: 'reminders_sent' column ensured to exist.")
         return {"status": "success", "message": "Migration applied or column already exists."}
     except Exception as e:
-        db.rollback()
+        # NOTE: db.rollback() is handled by the get_db's finally block
         logging.error(f"Migration failed: {e}")
-        return {"status": "error", "message": str(e)}
+        # Re-raise to let FastAPI's error handling catch it, or return a specific response
+        return {"status": "error", "message": str(e)}, 500
 
 @app.get("/")
 async def health_check():
