@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response
 from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
 from slack_bolt.async_app import AsyncApp
+from sqlalchemy.orm import Session
+from sqlalchemy import text
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
@@ -19,7 +21,6 @@ from .scheduled_tasks import (
     check_emails_task, email_reminder_task, check_pending_relocations_task
 )
 from .utils.db_manager import db_session_manager
-
 # --- Configure Logging ---
 handler = logging.StreamHandler(sys.stdout)
 handler.flush = sys.stdout.flush
