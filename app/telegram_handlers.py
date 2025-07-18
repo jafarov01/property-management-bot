@@ -170,7 +170,7 @@ async def relocate_command(update: Update, context: ContextTypes.DEFAULT_TYPE, d
             reminder_datetime = datetime.datetime.combine(checkout_date - datetime.timedelta(days=1), datetime.time(18, 0))
             scheduler.add_job(
                 send_checkout_reminder, 'date', run_date=reminder_datetime,
-                args=[booking_to_relocate.guest_name, to_code, checkout_date_str, context.bot],
+                    args=[booking_to_relocate.guest_name, to_code, checkout_date_str],
                 id=f"checkout_reminder_{booking_to_relocate.id}", replace_existing=True
             )
             db.commit()

@@ -57,12 +57,12 @@ async def lifespan(app: FastAPI):
     """Handles application startup and shutdown events."""
     bot = telegram_app.bot
     # Schedule all jobs, passing the bot instance to tasks that need it
-    scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, args=[bot], id="midnight_cleaner", replace_existing=True)
-    scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning", bot], id="morning_briefing", replace_existing=True)
-    scheduler.add_job(daily_briefing_task, 'cron', hour=22, minute=0, args=["Evening", bot], id="evening_briefing", replace_existing=True)
-    scheduler.add_job(check_emails_task, 'interval', minutes=5, args=[bot], id="email_checker", replace_existing=True)
-    scheduler.add_job(email_reminder_task, 'interval', minutes=10, args=[bot], id="email_reminder", replace_existing=True)
-    scheduler.add_job(check_pending_relocations_task, 'cron', hour=12, minute=0, args=[bot], id="relocation_checker", replace_existing=True)
+	scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, id="midnight_cleaner", replace_existing=True) # FIX: args removed
+	scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"], id="morning_briefing", replace_existing=True) # FIX: bot arg removed
+	scheduler.add_job(daily_briefing_task, 'cron', hour=22, minute=0, args=["Evening"], id="evening_briefing", replace_existing=True) # FIX: bot arg removed
+	scheduler.add_job(check_emails_task, 'interval', minutes=5, id="email_checker", replace_existing=True) # FIX: args removed
+	scheduler.add_job(email_reminder_task, 'interval', minutes=10, id="email_reminder", replace_existing=True) # FIX: args removed
+	scheduler.add_job(check_pending_relocations_task, 'cron', hour=12, minute=0, id="relocation_checker", replace_existing=True) # FIX: args removed
 
 
     scheduler.start()
