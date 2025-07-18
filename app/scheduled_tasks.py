@@ -22,6 +22,36 @@ scheduler = AsyncIOScheduler(jobstores=jobstores, timezone=config.TIMEZONE)
 # --- Scheduled Task Functions ---
 
 @db_session_manager
+async def set_properties_to_available(property_codes: list, reason: str, *, db: Session):
+    """
+    Takes a list of property codes and sets their status to AVAILABLE.
+    Sends a summary message to Telegram.
+    """
+    if not property_codes:
+        logging.info(f"Task '{reason}': No properties to make available.")
+        return
+
+    try:
+        db.query(models.Property).filter(
+            models.Property.code.in_(property_codes),
+            models.Property.status == "PENDING_CLEANING"
+        ).update({"status": "AVAILABLE"}, synchronize_session=False)
+        db.commit()
+
+        summary_text = (f"{reason}\n\n"
+                        f"🧹 The following {len(property_codes)} properties have been cleaned and are now *AVAILABLE*:\n\n"
+                        f"`{', '.join(sorted(property_codes))}`")
+        
+        bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
+        await telegram_client.send_telegram_message(bot, summary_text, topic_name="GENERAL")
+        logging.info(f"Task '{reason}': Set {len(property_codes)} properties to AVAILABLE.")
+    except Exception as e:
+        logging.error(f"Error during '{reason}' task", exc_info=e)
+        bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
+        await telegram_client.send_telegram_message(bot, f"🚨 Error in scheduled task '{reason}': {e}", topic_name="ISSUES")
+
+
+@db_session_manager
 async def check_pending_relocations_task(*, db: Session):
     """Sends a daily reminder for unresolved guest relocations."""
     logging.info("Running daily check for unresolved relocations...")
