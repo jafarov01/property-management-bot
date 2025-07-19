@@ -122,32 +122,31 @@ async def handle_message_events(body: dict, ack):
 
 # --- API Endpoints ---
 
-# @app.get("/_secret_migration_v5_add_reminders_sent")
-# async def perform_migration(db: Session = Depends(get_db)):
-#     """
-#     A temporary, one-time endpoint to apply database schema changes.
-#     This should be removed after the migration is successfully applied.
-#     """
-#     try:
-#         # SQL command to add the new column if it doesn't already exist.
-#         sql_command = text("""
-#             DO $$
-#             BEGIN
-#                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-#                                WHERE table_name='email_alerts' AND column_name='reminders_sent') THEN
-#                     ALTER TABLE email_alerts ADD COLUMN reminders_sent INTEGER NOT NULL DEFAULT 0;
-#                 END IF;
-#             END $$;
-#         """)
-#         db.execute(sql_command)
-#         db.commit()
-#         logging.info("Migration successful: 'reminders_sent' column ensured to exist.")
-#         return {"status": "success", "message": "Migration applied or column already exists."}
-#     except Exception as e:
-#         # NOTE: db.rollback() is handled by the get_db's finally block
-#         logging.error(f"Migration failed: {e}")
-#         # Re-raise to let FastAPI's error handling catch it, or return a specific response
-#         return {"status": "error", "message": str(e)}, 500
+@app.get("/_secret_migration_v7_expand_alert_fields")
+async def perform_capacity_migration(db: Session = Depends(get_db)):
+    """
+    A temporary, one-time endpoint to proactively increase the size of several
+    text columns in the email_alerts table to prevent future truncation errors.
+    """
+    try:
+        # A single transaction to alter all required columns
+        sql_commands = [
+            "ALTER TABLE email_alerts ALTER COLUMN property_code TYPE VARCHAR(1024);",
+            "ALTER TABLE email_alerts ALTER COLUMN reservation_number TYPE VARCHAR(1024);",
+            "ALTER TABLE email_alerts ALTER COLUMN deadline TYPE VARCHAR(1024);"
+        ]
+        
+        for command in sql_commands:
+            db.execute(text(command))
+        
+        db.commit()
+        
+        logging.info("Capacity migration successful: email_alerts columns expanded.")
+        return {"status": "success", "message": "Migration applied: 'email_alerts' columns for property_code, reservation_number, and deadline were expanded."}
+    except Exception as e:
+        logging.error(f"Migration v7 failed: {e}")
+        return {"status": "error", "message": str(e)}, 500
+
 
 @app.get("/")
 async def health_check():
