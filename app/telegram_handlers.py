@@ -4,7 +4,7 @@ import re
 from sqlalchemy.orm import Session, joinedload
 from telegram import Update
 from telegram.ext import ContextTypes
-
+import pytz 
 from . import models, telegram_client, config
 from .database import engine
 from .utils.db_manager import db_session_manager
@@ -421,7 +421,10 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         if alert and alert.status == "OPEN":
             alert.status = "HANDLED"
             alert.handled_by = query.from_user.full_name
-            alert.handled_at = datetime.datetime.now(datetime.timezone.utc)
+
+			budapest_tz = pytz.timezone(config.TIMEZONE)
+            alert.handled_at = datetime.datetime.now(budapest_tz)
+
             db.commit()
             
             new_text = telegram_client.format_handled_email_notification(alert, query.from_user.full_name)
