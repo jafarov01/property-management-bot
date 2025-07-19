@@ -11,14 +11,17 @@ from dotenv import load_dotenv
 
 # --- Load environment variables directly ---
 load_dotenv()
-IMAP_SERVER = os.getenv('IMAP_SERVER', 'imap.gmail.com')
-IMAP_USERNAME = os.getenv('IMAP_USERNAME')
-IMAP_PASSWORD = os.getenv('IMAP_PASSWORD')
+IMAP_SERVER = os.getenv("IMAP_SERVER", "imap.gmail.com")
+IMAP_USERNAME = os.getenv("IMAP_USERNAME")
+IMAP_PASSWORD = os.getenv("IMAP_PASSWORD")
+
 
 def inspect_latest_email_headers():
     """Connects to the IMAP server and prints the headers of the latest unread email."""
     if not all([IMAP_SERVER, IMAP_USERNAME, IMAP_PASSWORD]):
-        print("❌ ERROR: Please ensure IMAP_SERVER, IMAP_USERNAME, and IMAP_PASSWORD are set in your .env file.")
+        print(
+            "❌ ERROR: Please ensure IMAP_SERVER, IMAP_USERNAME, and IMAP_PASSWORD are set in your .env file."
+        )
         return
 
     try:
@@ -31,7 +34,9 @@ def inspect_latest_email_headers():
         # Search for all unread emails
         status, messages = mail.search(None, "UNSEEN")
         if status != "OK" or not messages[0]:
-            print("\nNo unread emails found. Please have an email forwarded now and then re-run this script.")
+            print(
+                "\nNo unread emails found. Please have an email forwarded now and then re-run this script."
+            )
             mail.logout()
             return
 
@@ -57,11 +62,11 @@ def inspect_latest_email_headers():
                 for part, charset in decoded_parts:
                     if isinstance(part, bytes):
                         # If a charset is specified, use it; otherwise, guess
-                        decoded_value += part.decode(charset or 'utf-8', 'ignore')
+                        decoded_value += part.decode(charset or "utf-8", "ignore")
                     else:
                         decoded_value += str(part)
             except Exception:
-                decoded_value = value # Fallback to raw value if decoding fails
+                decoded_value = value  # Fallback to raw value if decoding fails
 
             print(f"{header}: {decoded_value}")
         print("---------------------------------------\n")
@@ -74,5 +79,6 @@ def inspect_latest_email_headers():
     except Exception as e:
         print(f"An error occurred: {e}")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     inspect_latest_email_headers()

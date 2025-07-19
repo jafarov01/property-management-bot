@@ -5,12 +5,15 @@ import datetime
 import json
 import re
 import google.generativeai as genai
-from .config import GEMINI_API_KEY # <-- FIX: Changed to relative import
+from .config import GEMINI_API_KEY  # <-- FIX: Changed to relative import
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel("gemini-1.5-flash")
 
-async def parse_checkin_list_with_ai(message_text: str, checkin_date: str) -> List[Dict]:
+
+async def parse_checkin_list_with_ai(
+    message_text: str, checkin_date: str
+) -> List[Dict]:
     """
     Uses a robust, few-shot prompt to parse check-in data with high accuracy,
     handling messy and varied inputs.
@@ -63,13 +66,13 @@ async def parse_checkin_list_with_ai(message_text: str, checkin_date: str) -> Li
     {message_text}
     ---
     """
-    
+
     validated_bookings = []
     try:
         response = await model.generate_content_async(prompt)
-        
+
         # More robust cleaning: find the first '[' and the last ']' to extract the JSON array
-        match = re.search(r'\[.*\]', response.text, re.DOTALL)
+        match = re.search(r"\[.*\]", response.text, re.DOTALL)
         if not match:
             print(f"AI Check-in Parsing Error: No valid JSON array found in response.")
             print(f"Raw AI Response: {response.text}")
@@ -82,21 +85,27 @@ async def parse_checkin_list_with_ai(message_text: str, checkin_date: str) -> Li
             raise TypeError("AI did not return a list of objects.")
 
         for item in parsed_data:
-            if not isinstance(item, dict): continue
-            validated_bookings.append({
-                "property_code": str(item.get("property_code", "UNKNOWN")).upper(),
-                "guest_name": item.get("guest_name", "Unknown Guest"),
-                "platform": item.get("platform", "N/A"),
-                "due_payment": item.get("due_payment", "N/A"),
-                "checkin_date": datetime.date.fromisoformat(checkin_date),
-                "checkout_date": None,
-                "status": "Active"
-            })
+            if not isinstance(item, dict):
+                continue
+            validated_bookings.append(
+                {
+                    "property_code": str(item.get("property_code", "UNKNOWN")).upper(),
+                    "guest_name": item.get("guest_name", "Unknown Guest"),
+                    "platform": item.get("platform", "N/A"),
+                    "due_payment": item.get("due_payment", "N/A"),
+                    "checkin_date": datetime.date.fromisoformat(checkin_date),
+                    "checkout_date": None,
+                    "status": "Active",
+                }
+            )
         return validated_bookings
     except Exception as e:
         print(f"AI Check-in Parsing Exception: {e}")
-        print(f"Failed to parse response: {response.text if 'response' in locals() else 'No response'}")
+        print(
+            f"Failed to parse response: {response.text if 'response' in locals() else 'No response'}"
+        )
         return []
+
 
 async def parse_cleaning_list_with_ai(message_text: str) -> List[str]:
     """
@@ -129,18 +138,22 @@ async def parse_cleaning_list_with_ai(message_text: str) -> List[str]:
     """
     try:
         response = await model.generate_content_async(prompt)
-        
+
         # More robust cleaning: find the first '[' and the last ']' to extract the JSON array
-        match = re.search(r'\[.*\]', response.text, re.DOTALL)
+        match = re.search(r"\[.*\]", response.text, re.DOTALL)
         if not match:
             print(f"AI Cleaning Parsing Error: No valid JSON array found in response.")
             print(f"Raw AI Response: {response.text}")
             return []
-            
+
         cleaned_response = match.group(0)
         parsed_data = json.loads(cleaned_response)
-        return [str(item).upper() for item in parsed_data if isinstance(item, (str, int))]
+        return [
+            str(item).upper() for item in parsed_data if isinstance(item, (str, int))
+        ]
     except Exception as e:
         print(f"AI Cleaning Parsing Exception: {e}")
-        print(f"Failed to parse response: {response.text if 'response' in locals() else 'No response'}")
+        print(
+            f"Failed to parse response: {response.text if 'response' in locals() else 'No response'}"
+        )
         return []

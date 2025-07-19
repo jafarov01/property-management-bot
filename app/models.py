@@ -4,10 +4,20 @@
 # UPDATED: Added `reminders_sent` column to EmailAlert to support the new
 # two-reminder logic without misusing the `handled_at` column.
 # ==============================================================================
-from sqlalchemy import Column, Integer, String, Date, ForeignKey, Text, DateTime, BigInteger
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Date,
+    ForeignKey,
+    Text,
+    DateTime,
+    BigInteger,
+)
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base
+
 
 class Property(Base):
     __tablename__ = "properties"
@@ -15,8 +25,13 @@ class Property(Base):
     code = Column(String(50), unique=True, index=True, nullable=False)
     status = Column(String(50), default="AVAILABLE", nullable=False, index=True)
     notes = Column(Text, nullable=True)
-    bookings = relationship("Booking", back_populates="property", cascade="all, delete-orphan")
-    issues = relationship("Issue", back_populates="property", cascade="all, delete-orphan")
+    bookings = relationship(
+        "Booking", back_populates="property", cascade="all, delete-orphan"
+    )
+    issues = relationship(
+        "Issue", back_populates="property", cascade="all, delete-orphan"
+    )
+
 
 class Booking(Base):
     __tablename__ = "bookings"
@@ -31,6 +46,7 @@ class Booking(Base):
     status = Column(String(50), default="Active", index=True)
     property = relationship("Property", back_populates="bookings")
 
+
 class Issue(Base):
     __tablename__ = "issues"
     id = Column(Integer, primary_key=True, index=True)
@@ -39,6 +55,7 @@ class Issue(Base):
     description = Column(Text, nullable=False)
     is_resolved = Column(String(50), default="No", nullable=False)
     property = relationship("Property", back_populates="issues")
+
 
 class Relocation(Base):
     __tablename__ = "relocations"
@@ -50,6 +67,7 @@ class Relocation(Base):
     relocated_at = Column(DateTime(timezone=True), server_default=func.now())
     booking = relationship("Booking")
 
+
 class EmailAlert(Base):
     __tablename__ = "email_alerts"
     id = Column(Integer, primary_key=True, index=True)
@@ -59,7 +77,7 @@ class EmailAlert(Base):
     handled_by = Column(String(1024), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     handled_at = Column(DateTime(timezone=True), nullable=True)
-    reminders_sent = Column(Integer, default=0, nullable=False) # New column
+    reminders_sent = Column(Integer, default=0, nullable=False)  # New column
 
     # --- Columns to store parsed data ---
     summary = Column(Text, nullable=True)

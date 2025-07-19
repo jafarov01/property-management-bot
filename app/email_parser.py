@@ -14,7 +14,8 @@ from .config import GEMINI_API_KEY, IMAP_SERVER, IMAP_USERNAME, IMAP_PASSWORD
 
 # --- AI Configuration ---
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel("gemini-1.5-flash")
+
 
 def get_email_body(msg):
     """Extracts the text content from an email message object."""
@@ -24,21 +25,22 @@ def get_email_body(msg):
             content_disposition = str(part.get("Content-Disposition"))
             if content_type == "text/plain" and "attachment" not in content_disposition:
                 try:
-                    return part.get_payload(decode=True).decode('utf-8')
+                    return part.get_payload(decode=True).decode("utf-8")
                 except UnicodeDecodeError:
                     try:
-                        return part.get_payload(decode=True).decode('latin-1')
+                        return part.get_payload(decode=True).decode("latin-1")
                     except:
-                         return None
+                        return None
     else:
         try:
-            return msg.get_payload(decode=True).decode('utf-8')
+            return msg.get_payload(decode=True).decode("utf-8")
         except UnicodeDecodeError:
             try:
-                return msg.get_payload(decode=True).decode('latin-1')
+                return msg.get_payload(decode=True).decode("latin-1")
             except:
                 return None
     return None
+
 
 async def parse_booking_email_with_ai(email_body: str) -> Dict:
     """Uses AI to parse email content, including a summary, reservation number, and deadline."""
@@ -65,14 +67,21 @@ async def parse_booking_email_with_ai(email_body: str) -> Dict:
     try:
         response = await model.generate_content_async(prompt)
         # Use regex to find a JSON object within the response text
-        match = re.search(r'\{.*\}', response.text, re.DOTALL)
+        match = re.search(r"\{.*\}", response.text, re.DOTALL)
         if not match:
-            return {"category": "Parsing Failed", "summary": "AI response did not contain a valid JSON object."}
-        
+            return {
+                "category": "Parsing Failed",
+                "summary": "AI response did not contain a valid JSON object.",
+            }
+
         cleaned_response = match.group(0)
         return json.loads(cleaned_response)
     except Exception as e:
-        return {"category": "Parsing Exception", "summary": f"An exception occurred: {e}"}
+        return {
+            "category": "Parsing Exception",
+            "summary": f"An exception occurred: {e}",
+        }
+
 
 def fetch_unread_emails() -> List[Dict]:
     """
@@ -95,9 +104,9 @@ def fetch_unread_emails() -> List[Dict]:
                 status, msg_data = mail.fetch(num, "(RFC822)")
                 if status != "OK":
                     continue
-                
+
                 msg = email.message_from_bytes(msg_data[0][1])
-                
+
                 # --- NO FILTER APPLIED ---
                 # Process every fetched email. The previous header check has been removed.
                 body = get_email_body(msg)
