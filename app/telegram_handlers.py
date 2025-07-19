@@ -38,10 +38,17 @@ COMMANDS_HELP_MANUAL = {
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Shows the full command manual."""
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="\n".join([
-        "*Eivissa Operations Bot - Command Manual* 🤖\n",
-        *[f"*/{command}*\n_{details['description']}_\nExample: `{details['example']}`\n" for command, details in COMMANDS_HELP_MANUAL.items()]
-    ]), parse_mode='Markdown')
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="\n".join([
+            "*Eivissa Operations Bot - Command Manual* 🤖\n",
+            *[
+                f"*/{command}*\n_{details['description']}_\nExample: `{details['example']}`\n"
+                for command, details in COMMANDS_HELP_MANUAL.items()
+            ]
+        ]),
+        parse_mode='Markdown'
+    )
 
 @db_session_manager
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Session):
@@ -170,7 +177,7 @@ async def relocate_command(update: Update, context: ContextTypes.DEFAULT_TYPE, d
             reminder_datetime = datetime.datetime.combine(checkout_date - datetime.timedelta(days=1), datetime.time(18, 0))
             scheduler.add_job(
                 send_checkout_reminder, 'date', run_date=reminder_datetime,
-                    args=[booking_to_relocate.guest_name, to_code, checkout_date_str],
+                args=[booking_to_relocate.guest_name, to_code, checkout_date_str],
                 id=f"checkout_reminder_{booking_to_relocate.id}", replace_existing=True
             )
             db.commit()
@@ -350,7 +357,7 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
     action, *data = query.data.split(":")
-    
+
     # --- Show Available Rooms Action ---
     if action == "show_available":
         prop_code = data[0]
@@ -384,10 +391,10 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         # Generate new text and a NEW keyboard with updated callback data
         new_text, new_keyboard = telegram_client.format_conflict_alert(
             prop_code=active_booking.property_code,
-            active_booking=pending_booking, # The roles are now swapped
+            active_booking=pending_booking,  # The roles are now swapped
             pending_booking=active_booking
         )
-        
+
         confirmation_text = f"✅ *Swap Successful!*\n\n{new_text}"
         await query.edit_message_text(text=confirmation_text, parse_mode='Markdown', reply_markup=new_keyboard)
 
@@ -422,11 +429,11 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             alert.status = "HANDLED"
             alert.handled_by = query.from_user.full_name
 
-			budapest_tz = pytz.timezone(config.TIMEZONE)
+            budapest_tz = pytz.timezone(config.TIMEZONE)
             alert.handled_at = datetime.datetime.now(budapest_tz)
 
             db.commit()
-            
+
             new_text = telegram_client.format_handled_email_notification(alert, query.from_user.full_name)
             await query.edit_message_text(text=new_text, parse_mode='Markdown', reply_markup=None)
         else:
