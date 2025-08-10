@@ -1,10 +1,10 @@
 # FILE: app/main.py
-# VERSION: 2.4 (Async Database Refactor)
+# VERSION: 2.5 (APScheduler v3 API Fix)
 # ==============================================================================
-# UPDATED: Converted entire database layer from sync to async using asyncpg
-# All database operations now use AsyncSession and async/await patterns
+# UPDATED: Reverted the scheduler startup and shutdown calls to the syntax
+# used by APScheduler v3, which is the version installed as a dependency of
+# python-telegram-bot. This resolves the AttributeError on startup.
 # ==============================================================================
-
 import logging
 import sys
 import asyncio
@@ -69,14 +69,11 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging.info("LIFESPAN: Application startup...")
-    
-    # Create database tables asynchronously
     async with async_engine.begin() as conn:
         await conn.run_sync(models.Base.metadata.create_all)
     
     worker_task = asyncio.create_task(email_parsing_worker(email_queue))
 
-    # --- Register all handlers within the lifespan context ---
     command_mapping = {
         "help": telegram_handlers.help_command, "status": telegram_handlers.status_command,
         "check": telegram_handlers.check_command, "occupied": telegram_handlers.occupied_command,
@@ -89,7 +86,6 @@ async def lifespan(app: FastAPI):
         "find_guest": telegram_handlers.find_guest_command, "daily_revenue": telegram_handlers.daily_revenue_command,
         "relocations": telegram_handlers.relocations_command,
     }
-
     for command, handler_func in command_mapping.items():
         telegram_app.add_handler(CommandHandler(command, handler_func))
 
@@ -100,22 +96,25 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"], id="morning_briefing", replace_existing=True)
     scheduler.add_job(check_emails_task, 'interval', minutes=1, args=[email_queue], id="email_checker", replace_existing=True)
     scheduler.add_job(unhandled_issue_reminder_task, 'interval', minutes=5, id="issue_reminder", replace_existing=True)
-    scheduler.start_in_background()
+    
+    # --- FIX: Use APScheduler v3 API ---
+    scheduler.start()
     logging.info("LIFESPAN: APScheduler and email worker started.")
-
+    
     await telegram_app.initialize()
     await telegram_app.start()
     webhook_url = f"{config.WEBHOOK_URL}/telegram/webhook"
     await telegram_app.bot.set_webhook(url=webhook_url)
     logging.info(f"LIFESPAN: Telegram webhook set.")
-
+    
     yield
-
+    
     logging.info("LIFESPAN: Application shutdown...")
     worker_task.cancel()
     await telegram_app.stop()
     await telegram_app.shutdown()
-    await scheduler.shutdown()
+    # --- FIX: Use APScheduler v3 API ---
+    scheduler.shutdown()
     logging.info("LIFESPAN: All services shut down gracefully.")
 
 # --- FastAPI App Initialization ---
