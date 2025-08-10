@@ -17,14 +17,7 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from . import config, email_parser, models, telegram_client
 from .utils.db_manager import db_session_manager
 
-# --- FIX: Use the synchronous job store with the standard DATABASE_URL ---
-# This allows the scheduler to manage its own synchronous connection pool
-# without interfering with the main application's async pool.
-jobstores = {
-    "default": SQLAlchemyJobStore(url=config.DATABASE_URL)
-}
-scheduler = AsyncIOScheduler(jobstores=jobstores, timezone=config.TIMEZONE)
-
+scheduler = AsyncIOScheduler(timezone=config.TIMEZONE)
 
 # --- Background AI Parsing Task ---
 @db_session_manager
