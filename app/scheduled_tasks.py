@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from telegram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # Use the original, synchronous job store
-from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
 from . import config, email_parser, models, telegram_client
 from .utils.db_manager import db_session_manager

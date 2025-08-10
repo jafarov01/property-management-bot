@@ -98,14 +98,14 @@ async def lifespan(app: FastAPI):
     telegram_app.add_handler(CallbackQueryHandler(telegram_handlers.button_callback_handler))
     telegram_app.add_error_handler(error_handler)
 
-	if os.getenv("RUN_SCHEDULER") == "true":
-			scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, id="midnight_cleaner", replace_existing=True)
-			scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"], id="morning_briefing", replace_existing=True)
-			scheduler.add_job(check_emails_task, 'interval', minutes=1, args=[email_queue], id="email_checker", replace_existing=True)
-			scheduler.add_job(unhandled_issue_reminder_task, 'interval', minutes=5, id="issue_reminder", replace_existing=True)
-			
-			scheduler.start()
-			logging.info("LIFESPAN: APScheduler started in leader process.")
+    if os.getenv("RUN_SCHEDULER") == "true":
+        scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, id="midnight_cleaner", replace_existing=True)
+        scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"], id="morning_briefing", replace_existing=True)
+        scheduler.add_job(check_emails_task, 'interval', minutes=1, args=[email_queue], id="email_checker", replace_existing=True)
+        scheduler.add_job(unhandled_issue_reminder_task, 'interval', minutes=5, id="issue_reminder", replace_existing=True)
+        
+        scheduler.start_in_background()
+        logging.info("LIFESPAN: APScheduler started in leader process.")
     
     await telegram_app.initialize()
     await telegram_app.start()
