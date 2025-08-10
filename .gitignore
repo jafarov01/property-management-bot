@@ -5,3 +5,4 @@ venv
 secret.txt
 test_token.py
 id_finder_py
+.aider*

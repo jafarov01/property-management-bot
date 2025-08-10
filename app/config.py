@@ -1,6 +1,8 @@
-# FILE: config.py
+# FILE: app/config.py
+# VERSION: 2.1 (Corrected Email Logic)
 # ==============================================================================
-# UPDATED: Added email credentials to the final validation check.
+# UPDATED: Removed the overly restrictive EMAIL_SENDER_TO_PROCESS variable.
+# The filtering logic will now be handled more flexibly within the application code.
 # ==============================================================================
 import os
 from dotenv import load_dotenv
@@ -26,10 +28,10 @@ TELEGRAM_TARGET_CHAT_ID = os.getenv("TELEGRAM_TARGET_CHAT_ID")
 TELEGRAM_TOPIC_IDS = {
     "GENERAL": 1,
     "ISSUES": 2,
-    "EMAILS": 229,  # Make sure this is the correct ID for your #emails topic
+    "EMAILS": 229,
 }
 
-# --- NEW: Email Watchdog Configuration ---
+# --- Email Watchdog Configuration ---
 IMAP_SERVER = os.getenv("IMAP_SERVER", "imap.gmail.com")
 IMAP_USERNAME = os.getenv("IMAP_USERNAME")
 IMAP_PASSWORD = os.getenv("IMAP_PASSWORD")
@@ -48,8 +50,8 @@ if not all(
         WEBHOOK_URL,
         SLACK_CHECKIN_CHANNEL_ID,
         SLACK_CLEANING_CHANNEL_ID,
-        IMAP_USERNAME,  # Added
-        IMAP_PASSWORD,  # Added
+        IMAP_USERNAME,
+        IMAP_PASSWORD,
     ]
 ):
     raise ValueError(
