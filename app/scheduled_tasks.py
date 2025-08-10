@@ -1,17 +1,10 @@
 # FILE: app/scheduled_tasks.py
-# VERSION: 6.0 (Refactored for Immediate-Notify & Spec Alignment)
+# VERSION: 6.1 (With Telegram Message Editing)
 # ==============================================================================
-# UPDATED: This file has been heavily refactored to align with the spec.
-#
-# 1. `check_emails_task` now implements the "immediate-notify-first" pattern.
-#    It quickly fetches metadata, creates a basic alert, notifies Telegram,
-#    and then triggers a background task for heavy AI parsing.
-# 2. A new background task, `parse_email_in_background`, has been created to
-#    handle the AI parsing and update the original alert.
-# 3. `email_reminder_task` is now `unhandled_issue_reminder_task` and sends a
-#    single reminder after 15 minutes for BOTH open emails and pending
-#    relocations, as per the specification.
-# 4. The email check interval is now more frequent to improve responsiveness.
+# UPDATED: The `parse_email_in_background` task has been enhanced. After the AI
+# successfully parses an email, the task will now EDIT the original Telegram
+# message to include the new, detailed summary. This provides full context
+# without sending a second notification.
 # ==============================================================================
 import logging
 import datetime
@@ -34,7 +27,8 @@ scheduler = AsyncIOScheduler(jobstores=jobstores, timezone=config.TIMEZONE)
 async def parse_email_in_background(alert_id: int, email_uid: str, *, db: Session):
     """
     A background task to perform heavy AI parsing on an email.
-    It fetches the email body, calls the AI, and updates the existing alert record.
+    It fetches the email body, calls the AI, updates the existing alert record,
+    and then edits the original Telegram message with the new details.
     """
     logging.info(f"Starting background parsing for alert_id: {alert_id}")
     try:
@@ -66,13 +60,33 @@ async def parse_email_in_background(alert_id: int, email_uid: str, *, db: Sessio
             failure_summary = parsed_data.get("summary", "No summary provided by parser.")
             alert_to_update.summary = f"AI Parsing Failed: {failure_summary}"
             alert_to_update.category = "PARSING_FAILED"
-            # Optionally send a failure alert to the #issues topic
             bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
             alert_text = telegram_client.format_parsing_failure_alert(failure_summary)
             await telegram_client.send_telegram_message(bot, alert_text, topic_name="ISSUES")
 
         db.commit()
-        logging.info(f"Successfully parsed and updated alert_id: {alert_id}")
+        logging.info(f"Successfully parsed and updated alert_id: {alert_id} in DB.")
+
+        # --- NEW: Edit the original Telegram message ---
+        if alert_to_update.telegram_message_id and alert_to_update.status == models.EmailAlertStatus.OPEN:
+            try:
+                bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
+                # Re-format the message content with the newly populated alert record
+                new_text, new_reply_markup = telegram_client.format_email_notification(alert_to_update)
+
+                await bot.edit_message_text(
+                    chat_id=config.TELEGRAM_TARGET_CHAT_ID,
+                    message_id=alert_to_update.telegram_message_id,
+                    text=new_text,
+                    reply_markup=new_reply_markup,
+                    parse_mode="Markdown"
+                )
+                logging.info(f"Successfully edited Telegram message for alert {alert_id}")
+            except Exception as e:
+                # Log if editing fails, but don't roll back the DB changes.
+                # The data is saved, which is the most important part.
+                logging.error(f"Failed to edit Telegram message for alert {alert_id}", exc_info=e)
+        # --- End of new logic ---
 
     except Exception as e:
         logging.error(f"Critical error during background parsing for alert {alert_id}", exc_info=e)
@@ -85,7 +99,6 @@ async def parse_email_in_background(alert_id: int, email_uid: str, *, db: Sessio
 async def check_emails_task(*, db: Session):
     """
     Periodically fetches unread email metadata and creates initial alerts.
-    This is the first step in the "immediate-notify-first" workflow.
     """
     logging.info("Running email metadata check...")
     try:
@@ -99,17 +112,14 @@ async def check_emails_task(*, db: Session):
         for metadata in unread_emails_metadata:
             with db.begin_nested():
                 try:
-                    # 1. Create a basic alert record immediately with minimal info
                     new_alert = models.EmailAlert(
                         category="New Email",
                         summary=f"Subject: {metadata['subject']}",
-                        # Store the UID to fetch the body later
                         email_uid=metadata['uid']
                     )
                     db.add(new_alert)
-                    db.flush()  # Assigns an ID to new_alert
+                    db.flush()
 
-                    # 2. Send the initial, interactive notification to Telegram
                     notification_text, reply_markup = telegram_client.format_email_notification(new_alert)
                     sent_message = await telegram_client.send_telegram_message(
                         bot,
@@ -118,25 +128,19 @@ async def check_emails_task(*, db: Session):
                         reply_markup=reply_markup,
                     )
 
-                    # 3. If notification is successful, update the alert and mark email as read
                     if sent_message:
                         new_alert.telegram_message_id = sent_message.message_id
-                        # Mark email as read ONLY after DB and Telegram success
                         if email_parser.mark_email_as_read_by_uid(metadata['uid']):
                             logging.info(f"Successfully marked email UID {metadata['uid']} as read.")
                         else:
-                            # If marking as read fails, we must roll back to retry this email later.
                             raise Exception(f"Failed to mark email UID {metadata['uid']} as read.")
                     else:
                         raise Exception("Failed to send Telegram notification for new email.")
 
-                    # 4. Schedule the heavy AI parsing to run in the background
                     asyncio.create_task(parse_email_in_background(new_alert.id, metadata['uid']))
 
                 except Exception as e:
                     logging.error(f"Failed to process email UID {metadata.get('uid')}. It will be retried.", exc_info=e)
-                    # The `with db.begin_nested()` block will automatically roll back on any exception.
-                    # The email remains unread and will be picked up on the next run.
         db.commit()
     except Exception as e:
         logging.error("Critical error in check_emails_task.", exc_info=e)
@@ -153,7 +157,6 @@ async def unhandled_issue_reminder_task(*, db: Session):
     reminder_threshold = now - datetime.timedelta(minutes=15)
     bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
 
-    # --- Check for Open Email Alerts ---
     open_alerts = db.query(models.EmailAlert).filter(
         models.EmailAlert.status == "OPEN",
         models.EmailAlert.reminders_sent == 0,
@@ -175,7 +178,6 @@ async def unhandled_issue_reminder_task(*, db: Session):
         except Exception as e:
             logging.error(f"Could not send reminder for alert {alert.id}", exc_info=e)
 
-    # --- Check for Pending Relocations ---
     pending_relocations = db.query(models.Booking).filter(
         models.Booking.status == "PENDING_RELOCATION",
         models.Booking.reminders_sent == 0,
