@@ -23,7 +23,7 @@ async def get_property_from_context(update: Update, context_args: list, db: Asyn
     
     stmt = select(models.Property).options(joinedload(models.Property.issues)).filter(models.Property.code == prop_code)
     result = await db.execute(stmt)
-    prop = result.scalar_one_or_none()
+    prop = result.unique().scalar_one_or_none()
 
     if not prop:
         error_message = telegram_client.format_simple_error(
