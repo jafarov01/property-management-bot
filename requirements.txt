@@ -7,7 +7,6 @@ python-dotenv
 slack_bolt
 aiohttp
 python-telegram-bot[ext]==20.8
-apscheduler==4.0.0a2
 google-generativeai
 requests
 pytz
