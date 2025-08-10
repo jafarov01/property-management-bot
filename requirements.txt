@@ -2,12 +2,12 @@ fastapi
 uvicorn
 sqlalchemy
 asyncpg
+psycopg2-binary
 python-dotenv
 slack_bolt
 aiohttp
 python-telegram-bot[ext]
-apscheduler
-apscheduler_asyncsqlalchemy
+apscheduler==4.0.0a2
 google-generativeai
 requests
 pytz

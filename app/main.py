@@ -100,7 +100,7 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"], id="morning_briefing", replace_existing=True)
     scheduler.add_job(check_emails_task, 'interval', minutes=1, args=[email_queue], id="email_checker", replace_existing=True)
     scheduler.add_job(unhandled_issue_reminder_task, 'interval', minutes=5, id="issue_reminder", replace_existing=True)
-    scheduler.start()
+    scheduler.start_in_background()
     logging.info("LIFESPAN: APScheduler and email worker started.")
 
     await telegram_app.initialize()
@@ -115,7 +115,7 @@ async def lifespan(app: FastAPI):
     worker_task.cancel()
     await telegram_app.stop()
     await telegram_app.shutdown()
-    scheduler.shutdown()
+    await scheduler.shutdown()
     logging.info("LIFESPAN: All services shut down gracefully.")
 
 # --- FastAPI App Initialization ---
