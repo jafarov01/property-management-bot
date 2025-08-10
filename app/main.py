@@ -104,7 +104,7 @@ async def lifespan(app: FastAPI):
         scheduler.add_job(check_emails_task, 'interval', minutes=1, args=[email_queue], id="email_checker", replace_existing=True)
         scheduler.add_job(unhandled_issue_reminder_task, 'interval', minutes=5, id="issue_reminder", replace_existing=True)
         
-        scheduler.start_in_background()
+        scheduler.start()
         logging.info("LIFESPAN: APScheduler started in leader process.")
     
     await telegram_app.initialize()
@@ -119,7 +119,7 @@ async def lifespan(app: FastAPI):
     worker_task.cancel()
     await telegram_app.stop()
     await telegram_app.shutdown()
-    scheduler.shutdown()
+    scheduler.shutdown(wait=False)
     logging.info("LIFESPAN: All services shut down gracefully.")
 
 # --- FastAPI App Initialization ---

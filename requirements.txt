@@ -10,3 +10,5 @@ python-telegram-bot[ext]==20.8
 google-generativeai
 requests
 pytz
+
+apscheduler~=4.0.0
