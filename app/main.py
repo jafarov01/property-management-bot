@@ -1,13 +1,9 @@
 # FILE: app/main.py
-# VERSION: 2.2 (Final Fix: Email Worker Queue)
+# VERSION: 2.3 (Diagnostic Logging)
 # ==============================================================================
-# UPDATED: Implemented a robust producer-consumer pattern for email processing.
-# 1. An `asyncio.Queue` is created at startup.
-# 2. A dedicated `email_parsing_worker` task is started that runs for the
-#    entire application lifespan.
-# 3. The scheduled `check_emails_task` now only adds jobs to this queue,
-#    making it non-blocking and extremely fast.
-# This architecture solves the rate-limiting and blocking issues permanently.
+# UPDATED: Added extensive logging to the email worker and its queue to
+# diagnose why the background summarization task is failing. This will make
+# the entire process visible in the Render logs.
 # ==============================================================================
 import logging
 import sys
@@ -41,36 +37,36 @@ logging.basicConfig(
     handlers=[handler]
 )
 
-# --- Database & Application Instances ---
-models.Base.metadata.create_all(bind=engine)
-slack_app = AsyncApp(token=config.SLACK_BOT_TOKEN, signing_secret=config.SLACK_SIGNING_SECRET)
-telegram_app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
-slack_handler = AsyncSlackRequestHandler(slack_app)
-
-# --- NEW: Setup for Email Processing Queue ---
+# --- Setup for Email Processing Queue ---
 email_queue = asyncio.Queue()
 
 async def email_parsing_worker(queue: asyncio.Queue):
     """
     A long-running worker that processes email parsing jobs from a queue sequentially.
     """
-    logging.info("Email parsing worker started.")
+    logging.info("EMAIL WORKER: Starting up...")
     while True:
         try:
             # Wait for a job to appear in the queue
             alert_id, email_uid = await queue.get()
-            logging.info(f"Worker picked up job for alert_id: {alert_id}")
+            logging.info(f"EMAIL WORKER: Picked up job for alert_id: {alert_id}, UID: {email_uid}")
             
             # Process the job
             await parse_email_in_background(alert_id, email_uid)
             
+            logging.info(f"EMAIL WORKER: Finished job for alert_id: {alert_id}.")
             # Mark the task as done
             queue.task_done()
             
-            # Add a small delay to be respectful to the API
-            await asyncio.sleep(2)
+            await asyncio.sleep(1) # Small delay between jobs
+        except asyncio.CancelledError:
+            logging.info("EMAIL WORKER: Shutdown signal received.")
+            break
         except Exception as e:
-            logging.error(f"Error in email parsing worker: {e}", exc_info=True)
+            # This is a critical catch-all to ensure the worker itself never dies
+            logging.error(f"EMAIL WORKER: CRITICAL UNHANDLED EXCEPTION: {e}", exc_info=True)
+            # Wait a moment before trying to process the next job
+            await asyncio.sleep(5)
 
 
 # --- Global Error Handler ---
@@ -81,31 +77,30 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 # --- Application Lifespan (Startup/Shutdown) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start the dedicated email parsing worker
+    logging.info("LIFESPAN: Application startup...")
     worker_task = asyncio.create_task(email_parsing_worker(email_queue))
 
-    # Schedule all jobs, passing the queue to the email checker
     scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, id="midnight_cleaner", replace_existing=True)
     scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"], id="morning_briefing", replace_existing=True)
     scheduler.add_job(check_emails_task, 'interval', minutes=1, args=[email_queue], id="email_checker", replace_existing=True)
     scheduler.add_job(unhandled_issue_reminder_task, 'interval', minutes=5, id="issue_reminder", replace_existing=True)
     scheduler.start()
-    logging.info("APScheduler and email worker started.")
+    logging.info("LIFESPAN: APScheduler and email worker started.")
     
     await telegram_app.initialize()
     await telegram_app.start()
     webhook_url = f"{config.WEBHOOK_URL}/telegram/webhook"
     await telegram_app.bot.set_webhook(url=webhook_url)
-    logging.info(f"Telegram webhook set to: {webhook_url}")
+    logging.info(f"LIFESPAN: Telegram webhook set.")
     
     yield
     
-    # Cleanly shut down
+    logging.info("LIFESPAN: Application shutdown...")
     worker_task.cancel()
     await telegram_app.stop()
     await telegram_app.shutdown()
     scheduler.shutdown()
-    logging.info("Scheduler and worker shut down.")
+    logging.info("LIFESPAN: All services shut down gracefully.")
 
 # --- FastAPI App Initialization ---
 app = FastAPI(lifespan=lifespan)
@@ -123,7 +118,6 @@ async def perform_migration(db: Session = Depends(get_db)):
         return {"status": "error", "message": str(e)}, 500
 
 # --- Register Handlers and Endpoints ---
-# ... (rest of the file is unchanged)
 command_mapping = {
     "help": telegram_handlers.help_command, "status": telegram_handlers.status_command,
     "check": telegram_handlers.check_command, "occupied": telegram_handlers.occupied_command,
