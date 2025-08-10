@@ -12,13 +12,14 @@ from sqlalchemy import select, update, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from telegram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from apscheduler_async_sqlalchemy import AsyncSQLAlchemyJobStore
 
 from . import config, email_parser, models, telegram_client
 from .utils.db_manager import db_session_manager
+from .database import async_engine
 
 # --- Scheduler Instance ---
-jobstores = {"default": SQLAlchemyJobStore(url=config.DATABASE_URL)}
+jobstores = {"default": AsyncSQLAlchemyJobStore(engine=async_engine)}
 scheduler = AsyncIOScheduler(jobstores=jobstores, timezone=config.TIMEZONE)
 
 # --- Background AI Parsing Task ---
