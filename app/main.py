@@ -1,9 +1,10 @@
 # FILE: app/main.py
-# VERSION: 2.5 (APScheduler v3 API Fix)
+# VERSION: 2.6 (Final Rigid Fix)
 # ==============================================================================
-# UPDATED: Reverted the scheduler startup and shutdown calls to the syntax
-# used by APScheduler v3, which is the version installed as a dependency of
-# python-telegram-bot. This resolves the AttributeError on startup.
+# UPDATED: Fixed a critical blocking issue during startup. The synchronous
+# `models.Base.metadata.create_all` call has been wrapped in `conn.run_sync`,
+# allowing the database tables to be created without blocking the async event
+# loop. This ensures the email parsing worker starts correctly.
 # ==============================================================================
 import logging
 import sys
@@ -69,6 +70,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging.info("LIFESPAN: Application startup...")
+    
+    # --- FIX: Run the synchronous table creation in a non-blocking way ---
     async with async_engine.begin() as conn:
         await conn.run_sync(models.Base.metadata.create_all)
     
@@ -97,7 +100,6 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(check_emails_task, 'interval', minutes=1, args=[email_queue], id="email_checker", replace_existing=True)
     scheduler.add_job(unhandled_issue_reminder_task, 'interval', minutes=5, id="issue_reminder", replace_existing=True)
     
-    # --- FIX: Use APScheduler v3 API ---
     scheduler.start()
     logging.info("LIFESPAN: APScheduler and email worker started.")
     
@@ -113,7 +115,6 @@ async def lifespan(app: FastAPI):
     worker_task.cancel()
     await telegram_app.stop()
     await telegram_app.shutdown()
-    # --- FIX: Use APScheduler v3 API ---
     scheduler.shutdown()
     logging.info("LIFESPAN: All services shut down gracefully.")
 
