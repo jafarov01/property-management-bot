@@ -1,11 +1,10 @@
 # FILE: app/main.py
-# VERSION: 2.4 (NameError Fix)
+# VERSION: 2.4 (Async Database Refactor)
 # ==============================================================================
-# UPDATED: Fixed a NameError that occurred on startup. The Telegram command
-# handler registration logic has been moved to the correct scope within the
-# `lifespan` function, ensuring it runs after the `telegram_app` object
-# has been initialized.
+# UPDATED: Converted entire database layer from sync to async using asyncpg
+# All database operations now use AsyncSession and async/await patterns
 # ==============================================================================
+
 import logging
 import sys
 import asyncio
@@ -14,13 +13,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, Depends
 from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
 from slack_bolt.async_app import AsyncApp
-from sqlalchemy.orm import Session
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 from . import config, models, telegram_client
-from .database import engine, get_db
+from .database import async_engine, get_db
 from . import telegram_handlers
 from . import slack_handler as slack_processor
 from .scheduled_tasks import (
@@ -70,10 +69,14 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging.info("LIFESPAN: Application startup...")
-    models.Base.metadata.create_all(bind=engine)
+    
+    # Create database tables asynchronously
+    async with async_engine.begin() as conn:
+        await conn.run_sync(models.Base.metadata.create_all)
+    
     worker_task = asyncio.create_task(email_parsing_worker(email_queue))
 
-    # --- FIX: Register all handlers within the lifespan context ---
+    # --- Register all handlers within the lifespan context ---
     command_mapping = {
         "help": telegram_handlers.help_command, "status": telegram_handlers.status_command,
         "check": telegram_handlers.check_command, "occupied": telegram_handlers.occupied_command,
@@ -86,12 +89,12 @@ async def lifespan(app: FastAPI):
         "find_guest": telegram_handlers.find_guest_command, "daily_revenue": telegram_handlers.daily_revenue_command,
         "relocations": telegram_handlers.relocations_command,
     }
+
     for command, handler_func in command_mapping.items():
         telegram_app.add_handler(CommandHandler(command, handler_func))
 
     telegram_app.add_handler(CallbackQueryHandler(telegram_handlers.button_callback_handler))
     telegram_app.add_error_handler(error_handler)
-    # --- End of fix ---
 
     scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, id="midnight_cleaner", replace_existing=True)
     scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"], id="morning_briefing", replace_existing=True)
@@ -99,15 +102,15 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(unhandled_issue_reminder_task, 'interval', minutes=5, id="issue_reminder", replace_existing=True)
     scheduler.start()
     logging.info("LIFESPAN: APScheduler and email worker started.")
-    
+
     await telegram_app.initialize()
     await telegram_app.start()
     webhook_url = f"{config.WEBHOOK_URL}/telegram/webhook"
     await telegram_app.bot.set_webhook(url=webhook_url)
     logging.info(f"LIFESPAN: Telegram webhook set.")
-    
+
     yield
-    
+
     logging.info("LIFESPAN: Application shutdown...")
     worker_task.cancel()
     await telegram_app.stop()
@@ -120,14 +123,14 @@ app = FastAPI(lifespan=lifespan)
 
 # --- Migration Endpoint (Remove after use) ---
 @app.get("/_secret_migration_v1_add_email_uid")
-async def perform_migration(db: Session = Depends(get_db)):
+async def perform_migration(db: AsyncSession = Depends(get_db)):
     try:
         command = text("ALTER TABLE email_alerts ADD COLUMN IF NOT EXISTS email_uid VARCHAR(255);")
-        db.execute(command)
-        db.commit()
+        await db.execute(command)
+        await db.commit()
         return {"status": "success", "message": "Migration applied."}
     except Exception as e:
-        db.rollback()
+        await db.rollback()
         return {"status": "error", "message": str(e)}, 500
 
 # --- API Endpoints ---

@@ -1,12 +1,13 @@
 # FILE: app/telegram_handlers.py
 import datetime
 import re
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import select, func, update
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 from telegram import Update
 from telegram.ext import ContextTypes
 import pytz
 from . import models, telegram_client, config
-from .database import engine
 from .utils.db_manager import db_session_manager
 from .utils.validators import get_property_from_context
 from .scheduled_tasks import scheduler, send_checkout_reminder
@@ -110,28 +111,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @db_session_manager
 async def status_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, db: Session
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
 ):
     """Sends a summary of all property statuses."""
-    total = db.query(models.Property).count()
-    occupied = (
-        db.query(models.Property).filter(models.Property.status == "OCCUPIED").count()
-    )
-    available = (
-        db.query(models.Property).filter(models.Property.status == "AVAILABLE").count()
-    )
-    pending = (
-        db.query(models.Property)
-        .filter(models.Property.status == "PENDING_CLEANING")
-        .count()
-    )
-    maintenance = (
-        db.query(models.Property)
-        .filter(models.Property.status == "MAINTENANCE")
-        .count()
-    )
+    total_res = await db.execute(select(func.count(models.Property.id)))
+    occupied_res = await db.execute(select(func.count(models.Property.id)).where(models.Property.status == models.PropertyStatus.OCCUPIED))
+    available_res = await db.execute(select(func.count(models.Property.id)).where(models.Property.status == models.PropertyStatus.AVAILABLE))
+    pending_res = await db.execute(select(func.count(models.Property.id)).where(models.Property.status == models.PropertyStatus.PENDING_CLEANING))
+    maintenance_res = await db.execute(select(func.count(models.Property.id)).where(models.Property.status == models.PropertyStatus.MAINTENANCE))
+
     report = telegram_client.format_status_report(
-        total, occupied, available, pending, maintenance
+        total_res.scalar_one(), occupied_res.scalar_one(), available_res.scalar_one(), pending_res.scalar_one(), maintenance_res.scalar_one()
     )
     await context.bot.send_message(
         chat_id=update.effective_chat.id, text=report, parse_mode="Markdown"
@@ -140,7 +130,7 @@ async def status_command(
 
 @db_session_manager
 async def check_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, db: Session
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
 ):
     """Gets a detailed status report for a single property."""
     prop = await get_property_from_context(update, context.args, db)
@@ -148,13 +138,14 @@ async def check_command(
         return
 
     active_booking = None
-    if prop.status != "AVAILABLE":
-        active_booking = (
-            db.query(models.Booking)
+    if prop.status != models.PropertyStatus.AVAILABLE:
+        res = await db.execute(
+            select(models.Booking)
             .filter(models.Booking.property_id == prop.id)
             .order_by(models.Booking.id.desc())
-            .first()
         )
+        active_booking = res.scalars().first()
+        
     report = telegram_client.format_property_check(prop, active_booking, prop.issues)
     await context.bot.send_message(
         chat_id=update.effective_chat.id, text=report, parse_mode="Markdown"
@@ -163,15 +154,15 @@ async def check_command(
 
 @db_session_manager
 async def occupied_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, db: Session
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
 ):
     """Lists all currently occupied properties."""
-    props = (
-        db.query(models.Property)
-        .filter(models.Property.status == "OCCUPIED")
+    res = await db.execute(
+        select(models.Property)
+        .filter(models.Property.status == models.PropertyStatus.OCCUPIED)
         .order_by(models.Property.code)
-        .all()
     )
+    props = res.scalars().all()
     report = telegram_client.format_occupied_list(props)
     await context.bot.send_message(
         chat_id=update.effective_chat.id, text=report, parse_mode="Markdown"
@@ -180,15 +171,15 @@ async def occupied_command(
 
 @db_session_manager
 async def available_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, db: Session
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
 ):
     """Lists all clean and available properties."""
-    props = (
-        db.query(models.Property)
-        .filter(models.Property.status == "AVAILABLE")
+    res = await db.execute(
+        select(models.Property)
+        .filter(models.Property.status == models.PropertyStatus.AVAILABLE)
         .order_by(models.Property.code)
-        .all()
     )
+    props = res.scalars().all()
     report = telegram_client.format_available_list(props)
     await context.bot.send_message(
         chat_id=update.effective_chat.id, text=report, parse_mode="Markdown"
@@ -197,20 +188,20 @@ async def available_command(
 
 @db_session_manager
 async def early_checkout_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, db: Session
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
 ):
     """Manually marks an occupied property as PENDING_CLEANING."""
     prop = await get_property_from_context(update, context.args, db)
     if not prop:
         return
 
-    if prop.status != "OCCUPIED":
+    if prop.status != models.PropertyStatus.OCCUPIED:
         report = telegram_client.format_simple_error(
             f"Property `{prop.code}` is currently `{prop.status}`, not OCCUPIED."
         )
     else:
-        prop.status = "PENDING_CLEANING"
-        db.commit()
+        prop.status = models.PropertyStatus.PENDING_CLEANING
+        await db.commit()
         report = telegram_client.format_simple_success(
             f"Property `{prop.code}` has been checked out and is now *PENDING_CLEANING*."
         )
@@ -221,20 +212,20 @@ async def early_checkout_command(
 
 @db_session_manager
 async def set_clean_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, db: Session
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
 ):
     """Manually marks a property as clean and AVAILABLE."""
     prop = await get_property_from_context(update, context.args, db)
     if not prop:
         return
 
-    if prop.status != "PENDING_CLEANING":
+    if prop.status != models.PropertyStatus.PENDING_CLEANING:
         report = telegram_client.format_simple_error(
             f"Property `{prop.code}` is currently `{prop.status}`, not PENDING_CLEANING."
         )
     else:
-        prop.status = "AVAILABLE"
-        db.commit()
+        prop.status = models.PropertyStatus.AVAILABLE
+        await db.commit()
         report = telegram_client.format_simple_success(
             f"Property `{prop.code}` has been manually set to *AVAILABLE*."
         )
@@ -245,7 +236,7 @@ async def set_clean_command(
 
 @db_session_manager
 async def rename_property_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, db: Session
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
 ):
     """Renames a property's code in the database."""
     if len(context.args) != 2:
@@ -257,7 +248,8 @@ async def rename_property_command(
 
     old_code, new_code = context.args[0].upper(), context.args[1].upper()
 
-    if db.query(models.Property).filter(models.Property.code == new_code).first():
+    res = await db.execute(select(models.Property).filter(models.Property.code == new_code))
+    if res.scalars().first():
         report = telegram_client.format_simple_error(
             f"Cannot rename: Property `{new_code}` already exists."
         )
@@ -266,19 +258,20 @@ async def rename_property_command(
         )
         return
 
-    prop_to_rename = (
-        db.query(models.Property).filter(models.Property.code == old_code).first()
-    )
+    res = await db.execute(select(models.Property).filter(models.Property.code == old_code))
+    prop_to_rename = res.scalars().first()
     if not prop_to_rename:
         report = telegram_client.format_simple_error(
             f"Property `{old_code}` not found."
         )
     else:
         prop_to_rename.code = new_code
-        db.query(models.Booking).filter(
-            models.Booking.property_code == old_code
-        ).update({"property_code": new_code})
-        db.commit()
+        await db.execute(
+            update(models.Booking)
+            .filter(models.Booking.property_code == old_code)
+            .values(property_code=new_code)
+        )
+        await db.commit()
         report = telegram_client.format_simple_success(
             f"Property `{old_code}` has been successfully renamed to `{new_code}`."
         )
@@ -289,7 +282,7 @@ async def rename_property_command(
 
 @db_session_manager
 async def relocate_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, db: Session
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
 ):
     """Moves a guest pending relocation to an available room."""
     if len(context.args) != 3:
@@ -313,21 +306,22 @@ async def relocate_command(
         )
         return
 
-    to_prop = db.query(models.Property).filter(models.Property.code == to_code).first()
-    if not to_prop or to_prop.status != "AVAILABLE":
+    res = await db.execute(select(models.Property).filter(models.Property.code == to_code))
+    to_prop = res.scalars().first()
+    if not to_prop or to_prop.status != models.PropertyStatus.AVAILABLE:
         report = telegram_client.format_simple_error(
             f"Property `{to_code}` is not available for relocation."
         )
     else:
-        booking_to_relocate = (
-            db.query(models.Booking)
+        res = await db.execute(
+            select(models.Booking)
             .filter(
                 models.Booking.property_code == from_code,
-                models.Booking.status == "PENDING_RELOCATION",
+                models.Booking.status == models.BookingStatus.PENDING_RELOCATION,
             )
             .order_by(models.Booking.id.desc())
-            .first()
         )
+        booking_to_relocate = res.scalars().first()
         if not booking_to_relocate:
             report = telegram_client.format_simple_error(
                 f"No booking found pending relocation for `{from_code}`."
@@ -340,8 +334,8 @@ async def relocate_command(
                 new_property_code=to_code,
             )
             db.add(log_entry)
-            to_prop.status = "OCCUPIED"
-            booking_to_relocate.status = "Active"
+            to_prop.status = models.PropertyStatus.OCCUPIED
+            booking_to_relocate.status = models.BookingStatus.ACTIVE
             booking_to_relocate.property_id = to_prop.id
             booking_to_relocate.property_code = to_prop.code
             booking_to_relocate.checkout_date = checkout_date
@@ -356,7 +350,7 @@ async def relocate_command(
                 id=f"checkout_reminder_{booking_to_relocate.id}",
                 replace_existing=True,
             )
-            db.commit()
+            await db.commit()
             report = telegram_client.format_simple_success(
                 f"Relocation Successful!\n"
                 f"Guest *{booking_to_relocate.guest_name}* has been moved to `{to_code}`.\n"
@@ -369,15 +363,15 @@ async def relocate_command(
 
 @db_session_manager
 async def pending_cleaning_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, db: Session
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
 ):
     """Lists all properties waiting to be cleaned."""
-    props = (
-        db.query(models.Property)
-        .filter(models.Property.status == "PENDING_CLEANING")
+    res = await db.execute(
+        select(models.Property)
+        .filter(models.Property.status == models.PropertyStatus.PENDING_CLEANING)
         .order_by(models.Property.code)
-        .all()
     )
+    props = res.scalars().all()
     report = telegram_client.format_pending_cleaning_list(props)
     await context.bot.send_message(
         chat_id=update.effective_chat.id, text=report, parse_mode="Markdown"
@@ -386,29 +380,30 @@ async def pending_cleaning_command(
 
 @db_session_manager
 async def cancel_booking_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, db: Session
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
 ):
     """Cancels an active booking and makes the property available."""
     prop = await get_property_from_context(update, context.args, db)
     if not prop:
         return
 
-    if prop.status != "OCCUPIED":
+    if prop.status != models.PropertyStatus.OCCUPIED:
         report = telegram_client.format_simple_error(
             f"Property `{prop.code}` is not occupied."
         )
     else:
-        booking = (
-            db.query(models.Booking)
+        res = await db.execute(
+            select(models.Booking)
             .filter(
-                models.Booking.property_id == prop.id, models.Booking.status == "Active"
+                models.Booking.property_id == prop.id, 
+                models.Booking.status == models.BookingStatus.ACTIVE
             )
-            .first()
         )
+        booking = res.scalars().first()
         if booking:
-            booking.status = "Cancelled"
-            prop.status = "AVAILABLE"
-            db.commit()
+            booking.status = models.BookingStatus.CANCELLED
+            prop.status = models.PropertyStatus.AVAILABLE
+            await db.commit()
             report = telegram_client.format_simple_success(
                 f"Booking for *{booking.guest_name}* in `{prop.code}` has been cancelled. The property is now available."
             )
@@ -423,7 +418,7 @@ async def cancel_booking_command(
 
 @db_session_manager
 async def edit_booking_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, db: Session
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
 ):
     """Edits details of an active booking."""
     if len(context.args) < 3:
@@ -434,22 +429,24 @@ async def edit_booking_command(
         return
 
     prop_code = context.args[0].upper()
-    prop = db.query(models.Property).filter(models.Property.code == prop_code).first()
+    res = await db.execute(select(models.Property).filter(models.Property.code == prop_code))
+    prop = res.scalars().first()
 
-    if not prop or prop.status != "OCCUPIED":
+    if not prop or prop.status != models.PropertyStatus.OCCUPIED:
         report = telegram_client.format_simple_error(
             f"Property `{prop_code}` not found or is not occupied."
         )
     else:
         field = context.args[1].lower()
         new_value = " ".join(context.args[2:])
-        booking = (
-            db.query(models.Booking)
+        res = await db.execute(
+            select(models.Booking)
             .filter(
-                models.Booking.property_id == prop.id, models.Booking.status == "Active"
+                models.Booking.property_id == prop.id, 
+                models.Booking.status == models.BookingStatus.ACTIVE
             )
-            .first()
         )
+        booking = res.scalars().first()
         if not booking:
             report = telegram_client.format_simple_error(
                 f"No active booking found for `{prop_code}`."
@@ -460,7 +457,7 @@ async def edit_booking_command(
             )
         else:
             setattr(booking, field, new_value)
-            db.commit()
+            await db.commit()
             report = telegram_client.format_simple_success(
                 f"Booking for `{prop_code}` updated: `{field}` is now *{new_value}*."
             )
@@ -471,7 +468,7 @@ async def edit_booking_command(
 
 @db_session_manager
 async def log_issue_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, db: Session
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
 ):
     """Logs a new maintenance issue for a property."""
     if len(context.args) < 2:
@@ -488,7 +485,7 @@ async def log_issue_command(
     description = " ".join(context.args[1:])
     new_issue = models.Issue(property_id=prop.id, description=description)
     db.add(new_issue)
-    db.commit()
+    await db.commit()
     report = telegram_client.format_simple_success(
         f"New issue logged for `{prop.code}`: _{description}_"
     )
@@ -503,7 +500,7 @@ async def log_issue_command(
 
 @db_session_manager
 async def block_property_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, db: Session
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
 ):
     """Blocks a property for maintenance."""
     if len(context.args) < 2:
@@ -517,15 +514,15 @@ async def block_property_command(
     if not prop:
         return
 
-    if prop.status == "OCCUPIED":
+    if prop.status == models.PropertyStatus.OCCUPIED:
         report = telegram_client.format_simple_error(
             f"Cannot block `{prop.code}`, it is currently occupied."
         )
     else:
         reason = " ".join(context.args[1:])
-        prop.status = "MAINTENANCE"
+        prop.status = models.PropertyStatus.MAINTENANCE
         prop.notes = reason
-        db.commit()
+        await db.commit()
         report = telegram_client.format_simple_success(
             f"Property `{prop.code}` is now blocked for *MAINTENANCE*.\nReason: _{reason}_"
         )
@@ -536,21 +533,21 @@ async def block_property_command(
 
 @db_session_manager
 async def unblock_property_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, db: Session
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
 ):
     """Unblocks a property and makes it available."""
     prop = await get_property_from_context(update, context.args, db)
     if not prop:
         return
 
-    if prop.status != "MAINTENANCE":
+    if prop.status != models.PropertyStatus.MAINTENANCE:
         report = telegram_client.format_simple_error(
             f"Property `{prop.code}` is not under maintenance."
         )
     else:
-        prop.status = "AVAILABLE"
+        prop.status = models.PropertyStatus.AVAILABLE
         prop.notes = None
-        db.commit()
+        await db.commit()
         report = telegram_client.format_simple_success(
             f"Property `{prop.code}` has been unblocked and is now *AVAILABLE*."
         )
@@ -561,20 +558,20 @@ async def unblock_property_command(
 
 @db_session_manager
 async def booking_history_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, db: Session
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
 ):
     """Shows the last 5 bookings for a property."""
     prop = await get_property_from_context(update, context.args, db)
     if not prop:
         return
 
-    bookings = (
-        db.query(models.Booking)
+    res = await db.execute(
+        select(models.Booking)
         .filter(models.Booking.property_code == prop.code)
         .order_by(models.Booking.checkin_date.desc())
         .limit(5)
-        .all()
     )
+    bookings = res.scalars().all()
     report = telegram_client.format_booking_history(prop.code, bookings)
     await context.bot.send_message(
         chat_id=update.effective_chat.id, text=report, parse_mode="Markdown"
@@ -583,7 +580,7 @@ async def booking_history_command(
 
 @db_session_manager
 async def find_guest_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, db: Session
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
 ):
     """Finds which property a guest is staying in."""
     if not context.args:
@@ -593,15 +590,15 @@ async def find_guest_command(
         return
 
     guest_name = " ".join(context.args)
-    results = (
-        db.query(models.Booking)
+    res = await db.execute(
+        select(models.Booking)
         .options(joinedload(models.Booking.property))
         .filter(
             models.Booking.guest_name.ilike(f"%{guest_name}%"),
-            models.Booking.status == "Active",
+            models.Booking.status == models.BookingStatus.ACTIVE,
         )
-        .all()
     )
+    results = res.scalars().all()
     report = telegram_client.format_find_guest_results(results)
     await context.bot.send_message(
         chat_id=update.effective_chat.id, text=report, parse_mode="Markdown"
@@ -610,7 +607,7 @@ async def find_guest_command(
 
 @db_session_manager
 async def daily_revenue_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, db: Session
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
 ):
     """Calculates estimated revenue for a given date."""
     try:
@@ -625,11 +622,11 @@ async def daily_revenue_command(
         )
         return
 
-    bookings = (
-        db.query(models.Booking)
+    res = await db.execute(
+        select(models.Booking)
         .filter(models.Booking.checkin_date == target_date)
-        .all()
     )
+    bookings = res.scalars().all()
     total_revenue = 0.0
     for b in bookings:
         # Use regex to find the first number (integer or float) in the payment string
@@ -646,17 +643,18 @@ async def daily_revenue_command(
 
 @db_session_manager
 async def relocations_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, db: Session
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
 ):
     """Shows a history of recent guest relocations."""
-    query = db.query(models.Relocation).order_by(models.Relocation.relocated_at.desc())
+    query = select(models.Relocation).order_by(models.Relocation.relocated_at.desc())
     if context.args:
         prop_code = context.args[0].upper()
         query = query.filter(
             (models.Relocation.original_property_code == prop_code)
             | (models.Relocation.new_property_code == prop_code)
         )
-    history = query.limit(10).all()
+    res = await db.execute(query.limit(10))
+    history = res.scalars().all()
     report = telegram_client.format_relocation_history(history)
     await context.bot.send_message(
         chat_id=update.effective_chat.id, text=report, parse_mode="Markdown"
@@ -665,7 +663,7 @@ async def relocations_command(
 
 @db_session_manager
 async def button_callback_handler(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, db: Session
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
 ):
     """Handles all callback queries from inline buttons."""
     query = update.callback_query
@@ -675,12 +673,12 @@ async def button_callback_handler(
     # --- Show Available Rooms Action ---
     if action == "show_available":
         prop_code = data[0]
-        props = (
-            db.query(models.Property)
-            .filter(models.Property.status == "AVAILABLE")
+        res = await db.execute(
+            select(models.Property)
+            .filter(models.Property.status == models.PropertyStatus.AVAILABLE)
             .order_by(models.Property.code)
-            .all()
         )
+        props = res.scalars().all()
         report = telegram_client.format_available_list(
             props, for_relocation_from=prop_code
         )
@@ -697,16 +695,10 @@ async def button_callback_handler(
     # --- Swap Relocation Action ---
     elif action == "swap_relocation":
         active_booking_id, pending_booking_id = data[0], data[1]
-        active_booking = (
-            db.query(models.Booking)
-            .filter(models.Booking.id == active_booking_id)
-            .first()
-        )
-        pending_booking = (
-            db.query(models.Booking)
-            .filter(models.Booking.id == pending_booking_id)
-            .first()
-        )
+        res1 = await db.execute(select(models.Booking).filter(models.Booking.id == active_booking_id))
+        active_booking = res1.scalars().first()
+        res2 = await db.execute(select(models.Booking).filter(models.Booking.id == pending_booking_id))
+        pending_booking = res2.scalars().first()
 
         if not active_booking or not pending_booking:
             await query.edit_message_text(
@@ -716,9 +708,9 @@ async def button_callback_handler(
             return
 
         # Perform the swap
-        active_booking.status = "PENDING_RELOCATION"
-        pending_booking.status = "Active"
-        db.commit()
+        active_booking.status = models.BookingStatus.PENDING_RELOCATION
+        pending_booking.status = models.BookingStatus.ACTIVE
+        await db.commit()
 
         # Generate new text and a NEW keyboard with updated callback data
         new_text, new_keyboard = telegram_client.format_conflict_alert(
@@ -735,11 +727,8 @@ async def button_callback_handler(
     # --- NEW: Cancel Pending Relocation Action ---
     elif action == "cancel_pending_relocation":
         pending_booking_id = data[0]
-        booking_to_cancel = (
-            db.query(models.Booking)
-            .filter(models.Booking.id == pending_booking_id)
-            .first()
-        )
+        res = await db.execute(select(models.Booking).filter(models.Booking.id == pending_booking_id))
+        booking_to_cancel = res.scalars().first()
 
         if not booking_to_cancel:
             await query.edit_message_text(
@@ -748,15 +737,15 @@ async def button_callback_handler(
             )
             return
 
-        if booking_to_cancel.status != "PENDING_RELOCATION":
+        if booking_to_cancel.status != models.BookingStatus.PENDING_RELOCATION:
             await query.edit_message_text(
                 text=f"{query.message.text_markdown}\n\n⚠️ This booking is no longer pending relocation.",
                 parse_mode="Markdown",
             )
             return
 
-        booking_to_cancel.status = "Cancelled"
-        db.commit()
+        booking_to_cancel.status = models.BookingStatus.CANCELLED
+        await db.commit()
 
         # Final resolution message with all buttons removed
         new_text = (
@@ -770,17 +759,16 @@ async def button_callback_handler(
     # --- Handle Email Action ---
     elif action == "handle_email":
         alert_id = int(data[0])
-        alert = (
-            db.query(models.EmailAlert).filter(models.EmailAlert.id == alert_id).first()
-        )
-        if alert and alert.status == "OPEN":
-            alert.status = "HANDLED"
+        res = await db.execute(select(models.EmailAlert).filter(models.EmailAlert.id == alert_id))
+        alert = res.scalars().first()
+        if alert and alert.status == models.EmailAlertStatus.OPEN:
+            alert.status = models.EmailAlertStatus.HANDLED
             alert.handled_by = query.from_user.full_name
 
             budapest_tz = pytz.timezone(config.TIMEZONE)
             alert.handled_at = datetime.datetime.now(budapest_tz)
 
-            db.commit()
+            await db.commit()
 
             new_text = telegram_client.format_handled_email_notification(
                 alert, query.from_user.full_name
