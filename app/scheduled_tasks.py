@@ -4,7 +4,6 @@
 # UPDATED: The `check_emails_task` has been modified to process emails
 # sequentially instead of all at once. This prevents hitting API rate limits
 # when multiple emails arrive at the same time, ensuring every email is
--
 # properly parsed and updated.
 # ==============================================================================
 import logging
