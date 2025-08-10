@@ -73,8 +73,9 @@ async def lifespan(app: FastAPI):
     logging.info("LIFESPAN: Application startup...")
     
     # --- FIX: Run the synchronous table creation in a non-blocking way ---
-    async with async_engine.begin() as conn:
-        await conn.run_sync(models.Base.metadata.create_all)
+    # The following line is removed as Alembic now handles schema creation.
+    # async with async_engine.begin() as conn:
+    #     await conn.run_sync(models.Base.metadata.create_all)
     
     worker_task = asyncio.create_task(email_parsing_worker(email_queue))
     logging.info("LIFESPAN: Email parsing worker task has been created.")
@@ -126,29 +127,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # --- Migration Endpoint (Remove after use) ---
-@app.get("/_secret_migration_v1_add_email_uid")
-async def perform_migration(db: AsyncSession = Depends(get_db)):
-    try:
-        command = text("ALTER TABLE email_alerts ADD COLUMN IF NOT EXISTS email_uid VARCHAR(255);")
-        await db.execute(command)
-        await db.commit()
-        return {"status": "success", "message": "Migration applied."}
-    except Exception as e:
-        await db.rollback()
-        return {"status": "error", "message": str(e)}, 500
-
-# --- Migration Endpoint (Remove after use) ---
-@app.get("/_secret_migration_v2_add_created_at_to_bookings")
-async def perform_booking_migration(db: AsyncSession = Depends(get_db)):
-    """Adds the created_at column to the bookings table."""
-    try:
-        command = text("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT now()")
-        await db.execute(command)
-        await db.commit()
-        return {"status": "success", "message": "Booking migration applied: created_at column added."}
-    except Exception as e:
-        await db.rollback()
-        return {"status": "error", "message": str(e)}, 500
+# The secret migration endpoints below are removed as Alembic now handles all schema changes.
 
 # --- API Endpoints ---
 @slack_app.event("message")
