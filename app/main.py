@@ -137,6 +137,19 @@ async def perform_migration(db: AsyncSession = Depends(get_db)):
         await db.rollback()
         return {"status": "error", "message": str(e)}, 500
 
+# --- Migration Endpoint (Remove after use) ---
+@app.get("/_secret_migration_v2_add_created_at_to_bookings")
+async def perform_booking_migration(db: AsyncSession = Depends(get_db)):
+    """Adds the created_at column to the bookings table."""
+    try:
+        command = text("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT now()")
+        await db.execute(command)
+        await db.commit()
+        return {"status": "success", "message": "Booking migration applied: created_at column added."}
+    except Exception as e:
+        await db.rollback()
+        return {"status": "error", "message": str(e)}, 500
+
 # --- API Endpoints ---
 @slack_app.event("message")
 async def handle_message_events(body: dict, ack):
