@@ -47,7 +47,12 @@ class Property(Base):
     __tablename__ = "properties"
     id = Column(Integer, primary_key=True)
     code = Column(String(50), unique=True, index=True, nullable=False)
-    status = Column(SAEnum(PropertyStatus), default=PropertyStatus.AVAILABLE, nullable=False, index=True)
+    status = Column(
+        SAEnum(PropertyStatus, native_enum=False),
+        default=PropertyStatus.AVAILABLE,
+        nullable=False,
+        index=True,
+    )
     notes = Column(Text, nullable=True)
     bookings = relationship(
         "Booking", back_populates="property", cascade="all, delete-orphan"
@@ -68,7 +73,11 @@ class Booking(Base):
     checkout_date = Column(Date, index=True, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now()) # Added for reminder logic
     due_payment = Column(String(255))
-    status = Column(SAEnum(BookingStatus), default=BookingStatus.ACTIVE, index=True)
+    status = Column(
+        SAEnum(BookingStatus, native_enum=False),
+        default=BookingStatus.ACTIVE,
+        index=True,
+    )
     reminders_sent = Column(Integer, default=0, nullable=False) # New column for reminders
     property = relationship("Property", back_populates="bookings")
 
@@ -100,7 +109,12 @@ class EmailAlert(Base):
     telegram_message_id = Column(BigInteger, nullable=True, index=True)
     email_uid = Column(String(255), nullable=True, index=True) # New column for IMAP UID
     category = Column(String(255), nullable=False)
-    status = Column(SAEnum(EmailAlertStatus), default=EmailAlertStatus.OPEN, nullable=False, index=True)
+    status = Column(
+        SAEnum(EmailAlertStatus, native_enum=False),
+        default=EmailAlertStatus.OPEN,
+        nullable=False,
+        index=True,
+    )
     handled_by = Column(String(1024), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     handled_at = Column(DateTime(timezone=True), nullable=True)
