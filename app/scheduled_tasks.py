@@ -12,7 +12,7 @@ from sqlalchemy import select, update, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from telegram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler_async_sqlalchemy import AsyncSQLAlchemyJobStore
+from apscheduler_asyncsqlalchemy import AsyncSQLAlchemyJobStore
 
 from . import config, email_parser, models, telegram_client
 from .utils.db_manager import db_session_manager
