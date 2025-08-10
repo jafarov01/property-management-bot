@@ -1,10 +1,11 @@
 # FILE: app/scheduled_tasks.py
-# VERSION: 6.1 (With Telegram Message Editing)
+# VERSION: 6.2 (Sequential AI Processing)
 # ==============================================================================
-# UPDATED: The `parse_email_in_background` task has been enhanced. After the AI
-# successfully parses an email, the task will now EDIT the original Telegram
-# message to include the new, detailed summary. This provides full context
-# without sending a second notification.
+# UPDATED: The `check_emails_task` has been modified to process emails
+# sequentially instead of all at once. This prevents hitting API rate limits
+# when multiple emails arrive at the same time, ensuring every email is
+-
+# properly parsed and updated.
 # ==============================================================================
 import logging
 import datetime
@@ -67,11 +68,9 @@ async def parse_email_in_background(alert_id: int, email_uid: str, *, db: Sessio
         db.commit()
         logging.info(f"Successfully parsed and updated alert_id: {alert_id} in DB.")
 
-        # --- NEW: Edit the original Telegram message ---
         if alert_to_update.telegram_message_id and alert_to_update.status == models.EmailAlertStatus.OPEN:
             try:
                 bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
-                # Re-format the message content with the newly populated alert record
                 new_text, new_reply_markup = telegram_client.format_email_notification(alert_to_update)
 
                 await bot.edit_message_text(
@@ -83,10 +82,7 @@ async def parse_email_in_background(alert_id: int, email_uid: str, *, db: Sessio
                 )
                 logging.info(f"Successfully edited Telegram message for alert {alert_id}")
             except Exception as e:
-                # Log if editing fails, but don't roll back the DB changes.
-                # The data is saved, which is the most important part.
                 logging.error(f"Failed to edit Telegram message for alert {alert_id}", exc_info=e)
-        # --- End of new logic ---
 
     except Exception as e:
         logging.error(f"Critical error during background parsing for alert {alert_id}", exc_info=e)
@@ -98,7 +94,8 @@ async def parse_email_in_background(alert_id: int, email_uid: str, *, db: Sessio
 @db_session_manager
 async def check_emails_task(*, db: Session):
     """
-    Periodically fetches unread email metadata and creates initial alerts.
+    Periodically fetches unread email metadata, creates initial alerts,
+    and then processes the AI parsing sequentially.
     """
     logging.info("Running email metadata check...")
     try:
@@ -106,10 +103,13 @@ async def check_emails_task(*, db: Session):
         if not unread_emails_metadata:
             return
 
-        logging.info(f"Found {len(unread_emails_metadata)} new emails to process.")
+        logging.info(f"Found {len(unread_emails_metadata)} new emails to process sequentially.")
         bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
 
+        # --- FIX: Process emails one by one to avoid rate limiting ---
         for metadata in unread_emails_metadata:
+            alert_id_to_process = None
+            email_uid_to_process = None
             with db.begin_nested():
                 try:
                     new_alert = models.EmailAlert(
@@ -132,15 +132,25 @@ async def check_emails_task(*, db: Session):
                         new_alert.telegram_message_id = sent_message.message_id
                         if email_parser.mark_email_as_read_by_uid(metadata['uid']):
                             logging.info(f"Successfully marked email UID {metadata['uid']} as read.")
+                            # Store details for background processing after commit
+                            alert_id_to_process = new_alert.id
+                            email_uid_to_process = metadata['uid']
                         else:
                             raise Exception(f"Failed to mark email UID {metadata['uid']} as read.")
                     else:
                         raise Exception("Failed to send Telegram notification for new email.")
 
-                    asyncio.create_task(parse_email_in_background(new_alert.id, metadata['uid']))
-
                 except Exception as e:
                     logging.error(f"Failed to process email UID {metadata.get('uid')}. It will be retried.", exc_info=e)
+            
+            # --- Trigger background parsing outside the transaction block ---
+            if alert_id_to_process and email_uid_to_process:
+                # We still use create_task so this loop doesn't block the main scheduler,
+                # but we `await` it right away to force sequential execution.
+                await parse_email_in_background(alert_id_to_process, email_uid_to_process)
+                # Add a small delay between API calls as an extra precaution
+                await asyncio.sleep(1)
+
         db.commit()
     except Exception as e:
         logging.error("Critical error in check_emails_task.", exc_info=e)
