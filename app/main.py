@@ -1,9 +1,10 @@
 # FILE: app/main.py
-# VERSION: 2.3 (Diagnostic Logging)
+# VERSION: 2.4 (NameError Fix)
 # ==============================================================================
-# UPDATED: Added extensive logging to the email worker and its queue to
-# diagnose why the background summarization task is failing. This will make
-# the entire process visible in the Render logs.
+# UPDATED: Fixed a NameError that occurred on startup. The Telegram command
+# handler registration logic has been moved to the correct scope within the
+# `lifespan` function, ensuring it runs after the `telegram_app` object
+# has been initialized.
 # ==============================================================================
 import logging
 import sys
@@ -37,39 +38,30 @@ logging.basicConfig(
     handlers=[handler]
 )
 
-# --- Setup for Email Processing Queue ---
+# --- App Instances & Worker Queue ---
+slack_app = AsyncApp(token=config.SLACK_BOT_TOKEN, signing_secret=config.SLACK_SIGNING_SECRET)
+telegram_app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
+slack_handler = AsyncSlackRequestHandler(slack_app)
 email_queue = asyncio.Queue()
 
 async def email_parsing_worker(queue: asyncio.Queue):
-    """
-    A long-running worker that processes email parsing jobs from a queue sequentially.
-    """
+    """A long-running worker that processes email parsing jobs from a queue sequentially."""
     logging.info("EMAIL WORKER: Starting up...")
     while True:
         try:
-            # Wait for a job to appear in the queue
             alert_id, email_uid = await queue.get()
             logging.info(f"EMAIL WORKER: Picked up job for alert_id: {alert_id}, UID: {email_uid}")
-            
-            # Process the job
             await parse_email_in_background(alert_id, email_uid)
-            
             logging.info(f"EMAIL WORKER: Finished job for alert_id: {alert_id}.")
-            # Mark the task as done
             queue.task_done()
-            
-            await asyncio.sleep(1) # Small delay between jobs
+            await asyncio.sleep(1)
         except asyncio.CancelledError:
             logging.info("EMAIL WORKER: Shutdown signal received.")
             break
         except Exception as e:
-            # This is a critical catch-all to ensure the worker itself never dies
             logging.error(f"EMAIL WORKER: CRITICAL UNHANDLED EXCEPTION: {e}", exc_info=True)
-            # Wait a moment before trying to process the next job
             await asyncio.sleep(5)
 
-
-# --- Global Error Handler ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logging.error("Exception caught by global error handler", exc_info=context.error)
     # ... error handling logic ...
@@ -78,7 +70,28 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging.info("LIFESPAN: Application startup...")
+    models.Base.metadata.create_all(bind=engine)
     worker_task = asyncio.create_task(email_parsing_worker(email_queue))
+
+    # --- FIX: Register all handlers within the lifespan context ---
+    command_mapping = {
+        "help": telegram_handlers.help_command, "status": telegram_handlers.status_command,
+        "check": telegram_handlers.check_command, "occupied": telegram_handlers.occupied_command,
+        "available": telegram_handlers.available_command, "pending_cleaning": telegram_handlers.pending_cleaning_command,
+        "relocate": telegram_handlers.relocate_command, "rename_property": telegram_handlers.rename_property_command,
+        "set_clean": telegram_handlers.set_clean_command, "early_checkout": telegram_handlers.early_checkout_command,
+        "cancel_booking": telegram_handlers.cancel_booking_command, "edit_booking": telegram_handlers.edit_booking_command,
+        "log_issue": telegram_handlers.log_issue_command, "block_property": telegram_handlers.block_property_command,
+        "unblock_property": telegram_handlers.unblock_property_command, "booking_history": telegram_handlers.booking_history_command,
+        "find_guest": telegram_handlers.find_guest_command, "daily_revenue": telegram_handlers.daily_revenue_command,
+        "relocations": telegram_handlers.relocations_command,
+    }
+    for command, handler_func in command_mapping.items():
+        telegram_app.add_handler(CommandHandler(command, handler_func))
+
+    telegram_app.add_handler(CallbackQueryHandler(telegram_handlers.button_callback_handler))
+    telegram_app.add_error_handler(error_handler)
+    # --- End of fix ---
 
     scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, id="midnight_cleaner", replace_existing=True)
     scheduler.add_job(daily_briefing_task, 'cron', hour=10, minute=0, args=["Morning"], id="morning_briefing", replace_existing=True)
@@ -117,25 +130,7 @@ async def perform_migration(db: Session = Depends(get_db)):
         db.rollback()
         return {"status": "error", "message": str(e)}, 500
 
-# --- Register Handlers and Endpoints ---
-command_mapping = {
-    "help": telegram_handlers.help_command, "status": telegram_handlers.status_command,
-    "check": telegram_handlers.check_command, "occupied": telegram_handlers.occupied_command,
-    "available": telegram_handlers.available_command, "pending_cleaning": telegram_handlers.pending_cleaning_command,
-    "relocate": telegram_handlers.relocate_command, "rename_property": telegram_handlers.rename_property_command,
-    "set_clean": telegram_handlers.set_clean_command, "early_checkout": telegram_handlers.early_checkout_command,
-    "cancel_booking": telegram_handlers.cancel_booking_command, "edit_booking": telegram_handlers.edit_booking_command,
-    "log_issue": telegram_handlers.log_issue_command, "block_property": telegram_handlers.block_property_command,
-    "unblock_property": telegram_handlers.unblock_property_command, "booking_history": telegram_handlers.booking_history_command,
-    "find_guest": telegram_handlers.find_guest_command, "daily_revenue": telegram_handlers.daily_revenue_command,
-    "relocations": telegram_handlers.relocations_command,
-}
-for command, handler_func in command_mapping.items():
-    telegram_app.add_handler(CommandHandler(command, handler_func))
-
-telegram_app.add_handler(CallbackQueryHandler(telegram_handlers.button_callback_handler))
-telegram_app.add_error_handler(error_handler)
-
+# --- API Endpoints ---
 @slack_app.event("message")
 async def handle_message_events(body: dict, ack):
     await ack()
