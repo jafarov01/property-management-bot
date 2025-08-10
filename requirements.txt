@@ -7,7 +7,7 @@ slack_bolt
 aiohttp
 python-telegram-bot[ext]
 apscheduler
-apscheduler-asyncsqlalchemy
+apscheduler_asyncsqlalchemy
 google-generativeai
 requests
 pytz
