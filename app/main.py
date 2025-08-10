@@ -76,6 +76,8 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(models.Base.metadata.create_all)
     
     worker_task = asyncio.create_task(email_parsing_worker(email_queue))
+    logging.info("LIFESPAN: Email parsing worker task has been created.")
+
 
     command_mapping = {
         "help": telegram_handlers.help_command, "status": telegram_handlers.status_command,
