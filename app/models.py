@@ -31,9 +31,9 @@ class PropertyStatus(str, enum.Enum):
     MAINTENANCE = "MAINTENANCE"
 
 class BookingStatus(str, enum.Enum):
-    ACTIVE = "Active"
-    DEPARTED = "Departed"
-    CANCELLED = "Cancelled"
+    ACTIVE = "ACTIVE"
+    DEPARTED = "DEPARTED"
+    CANCELLED = "CANCELLED"
     PENDING_RELOCATION = "PENDING_RELOCATION"
 
 class EmailAlertStatus(str, enum.Enum):
