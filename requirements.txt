@@ -11,4 +11,4 @@ google-generativeai
 requests
 pytz
 
-apscheduler~=4.0.0
+apscheduler==3.10.4
