@@ -1,10 +1,9 @@
 # FILE: app/scheduled_tasks.py
-# VERSION: 6.2 (Sequential AI Processing)
+# VERSION: 6.3 (Final Fix: Using Worker Queue)
 # ==============================================================================
-# UPDATED: The `check_emails_task` has been modified to process emails
-# sequentially instead of all at once. This prevents hitting API rate limits
-# when multiple emails arrive at the same time, ensuring every email is
-# properly parsed and updated.
+# UPDATED: The `check_emails_task` is now extremely lightweight. Its only job
+# is to find unread emails, create the initial alert, and put a job onto the
+# shared `email_queue`. It no longer performs any heavy processing itself.
 # ==============================================================================
 import logging
 import datetime
@@ -26,11 +25,9 @@ scheduler = AsyncIOScheduler(jobstores=jobstores, timezone=config.TIMEZONE)
 @db_session_manager
 async def parse_email_in_background(alert_id: int, email_uid: str, *, db: Session):
     """
-    A background task to perform heavy AI parsing on an email.
-    It fetches the email body, calls the AI, updates the existing alert record,
-    and then edits the original Telegram message with the new details.
+    This function is now called by the dedicated worker, not the scheduler.
     """
-    logging.info(f"Starting background parsing for alert_id: {alert_id}")
+    logging.info(f"Parsing job started for alert_id: {alert_id}")
     try:
         email_body = email_parser.fetch_email_body_by_uid(email_uid)
         if not email_body:
@@ -42,7 +39,6 @@ async def parse_email_in_background(alert_id: int, email_uid: str, *, db: Sessio
             return
 
         parsed_data = await email_parser.parse_booking_email_with_ai(email_body)
-
         alert_to_update = db.query(models.EmailAlert).filter(models.EmailAlert.id == alert_id).first()
         if not alert_to_update:
             logging.error(f"Could not find alert {alert_id} to update after parsing.")
@@ -65,13 +61,12 @@ async def parse_email_in_background(alert_id: int, email_uid: str, *, db: Sessio
             await telegram_client.send_telegram_message(bot, alert_text, topic_name="ISSUES")
 
         db.commit()
-        logging.info(f"Successfully parsed and updated alert_id: {alert_id} in DB.")
+        logging.info(f"DB updated for alert_id: {alert_id}.")
 
         if alert_to_update.telegram_message_id and alert_to_update.status == models.EmailAlertStatus.OPEN:
             try:
                 bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
                 new_text, new_reply_markup = telegram_client.format_email_notification(alert_to_update)
-
                 await bot.edit_message_text(
                     chat_id=config.TELEGRAM_TARGET_CHAT_ID,
                     message_id=alert_to_update.telegram_message_id,
@@ -79,7 +74,7 @@ async def parse_email_in_background(alert_id: int, email_uid: str, *, db: Sessio
                     reply_markup=new_reply_markup,
                     parse_mode="Markdown"
                 )
-                logging.info(f"Successfully edited Telegram message for alert {alert_id}")
+                logging.info(f"Telegram message edited for alert {alert_id}")
             except Exception as e:
                 logging.error(f"Failed to edit Telegram message for alert {alert_id}", exc_info=e)
 
@@ -91,24 +86,21 @@ async def parse_email_in_background(alert_id: int, email_uid: str, *, db: Sessio
 # --- Scheduled Task Functions ---
 
 @db_session_manager
-async def check_emails_task(*, db: Session):
+async def check_emails_task(queue: asyncio.Queue, *, db: Session):
     """
-    Periodically fetches unread email metadata, creates initial alerts,
-    and then processes the AI parsing sequentially.
+    This task is now a fast "producer". It finds unread emails, creates the
+    initial alert, and puts a job on the queue for the worker to process.
     """
-    logging.info("Running email metadata check...")
+    logging.info("Running email check (producer)...")
     try:
         unread_emails_metadata = email_parser.fetch_unread_email_metadata()
         if not unread_emails_metadata:
             return
 
-        logging.info(f"Found {len(unread_emails_metadata)} new emails to process sequentially.")
+        logging.info(f"Producer found {len(unread_emails_metadata)} emails. Adding to queue.")
         bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
 
-        # --- FIX: Process emails one by one to avoid rate limiting ---
         for metadata in unread_emails_metadata:
-            alert_id_to_process = None
-            email_uid_to_process = None
             with db.begin_nested():
                 try:
                     new_alert = models.EmailAlert(
@@ -130,29 +122,18 @@ async def check_emails_task(*, db: Session):
                     if sent_message:
                         new_alert.telegram_message_id = sent_message.message_id
                         if email_parser.mark_email_as_read_by_uid(metadata['uid']):
-                            logging.info(f"Successfully marked email UID {metadata['uid']} as read.")
-                            # Store details for background processing after commit
-                            alert_id_to_process = new_alert.id
-                            email_uid_to_process = metadata['uid']
+                            # Add the job to the queue for the worker
+                            await queue.put((new_alert.id, metadata['uid']))
+                            logging.info(f"Job for alert {new_alert.id} added to queue.")
                         else:
                             raise Exception(f"Failed to mark email UID {metadata['uid']} as read.")
                     else:
                         raise Exception("Failed to send Telegram notification for new email.")
-
                 except Exception as e:
-                    logging.error(f"Failed to process email UID {metadata.get('uid')}. It will be retried.", exc_info=e)
-            
-            # --- Trigger background parsing outside the transaction block ---
-            if alert_id_to_process and email_uid_to_process:
-                # We still use create_task so this loop doesn't block the main scheduler,
-                # but we `await` it right away to force sequential execution.
-                await parse_email_in_background(alert_id_to_process, email_uid_to_process)
-                # Add a small delay between API calls as an extra precaution
-                await asyncio.sleep(1)
-
+                    logging.error(f"Failed to queue job for email UID {metadata.get('uid')}.", exc_info=e)
         db.commit()
     except Exception as e:
-        logging.error("Critical error in check_emails_task.", exc_info=e)
+        logging.error("Critical error in check_emails_task (producer).", exc_info=e)
 
 
 @db_session_manager
@@ -161,6 +142,7 @@ async def unhandled_issue_reminder_task(*, db: Session):
     Checks for any open issues (Email Alerts or Pending Relocations) older than
     15 minutes and sends a single, one-time reminder.
     """
+    # ... (this function remains unchanged)
     logging.info("Checking for unhandled issues for 15-minute reminder...")
     now = datetime.datetime.now(datetime.timezone.utc)
     reminder_threshold = now - datetime.timedelta(minutes=15)
@@ -208,6 +190,7 @@ async def unhandled_issue_reminder_task(*, db: Session):
 
 async def send_checkout_reminder(guest_name: str, property_code: str, checkout_date: str):
     """Sends a high-priority checkout reminder for a relocated guest."""
+    # ... (this function remains unchanged)
     bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
     report = telegram_client.format_checkout_reminder_alert(guest_name, property_code, checkout_date)
     await telegram_client.send_telegram_message(bot, report, topic_name="ISSUES")
@@ -217,6 +200,7 @@ async def send_checkout_reminder(guest_name: str, property_code: str, checkout_d
 @db_session_manager
 async def daily_briefing_task(time_of_day: str, *, db: Session):
     """Sends a daily status briefing to the GENERAL topic."""
+    # ... (this function remains unchanged)
     logging.info(f"Running {time_of_day} briefing...")
     occupied = db.query(models.Property).filter(models.Property.status == "OCCUPIED").count()
     pending = db.query(models.Property).filter(models.Property.status == "PENDING_CLEANING").count()
@@ -230,6 +214,7 @@ async def daily_briefing_task(time_of_day: str, *, db: Session):
 @db_session_manager
 async def daily_midnight_task(*, db: Session):
     """Sets all PENDING_CLEANING properties to AVAILABLE for the new day."""
+    # ... (this function remains unchanged)
     logging.info("Running midnight task...")
     bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
     try:
