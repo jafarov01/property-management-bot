@@ -147,3 +147,30 @@ async def telegram_webhook(req: Request):
 @app.post("/slack/events")
 async def slack_events_endpoint(req: Request):
     return await slack_handler.handle(req)
+from .models import Base
+
+@app.get("/debug/describe_tables")
+async def describe_tables(db: AsyncSession = Depends(get_db)):
+    """
+    A hidden endpoint to describe all tables and their columns.
+    """
+    results = {}
+    for table_name, table in Base.metadata.tables.items():
+        query = text(f"""
+            SELECT column_name, data_type, character_maximum_length, is_nullable
+            FROM information_schema.columns
+            WHERE table_name = '{table_name}'
+            ORDER BY ordinal_position;
+        """)
+        result = await db.execute(query)
+        columns = result.fetchall()
+        results[table_name] = [
+            {
+                "column_name": col[0],
+                "data_type": col[1],
+                "max_length": col[2],
+                "is_nullable": col[3],
+            }
+            for col in columns
+        ]
+    return results
