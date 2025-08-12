@@ -74,8 +74,8 @@ async def lifespan(app: FastAPI):
     
     # --- FIX: Run the synchronous table creation in a non-blocking way ---
     # The following line is removed as Alembic now handles schema creation.
-    # async with async_engine.begin() as conn:
-    #     await conn.run_sync(models.Base.metadata.create_all)
+    async with async_engine.begin() as conn:
+        await conn.run_sync(models.Base.metadata.create_all)
     
     worker_task = asyncio.create_task(email_parsing_worker(email_queue))
     logging.info("LIFESPAN: Email parsing worker task has been created.")

@@ -4,6 +4,9 @@
 # SQLAlchemyJobStore. APScheduler v3 requires a synchronous driver, so this
 # allows it to use psycopg2 while the rest of the app uses asyncpg.
 # ==============================================================================
+from dotenv import load_dotenv
+
+load_dotenv()
 import logging
 import datetime
 import asyncio
