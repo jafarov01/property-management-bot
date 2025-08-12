@@ -71,6 +71,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging.info("LIFESPAN: Application startup...")
+    logging.info(f"LIFESPAN: Connecting to database at {config.DATABASE_URL}")
     
     # --- FIX: Run the synchronous table creation in a non-blocking way ---
     # The following line is removed as Alembic now handles schema creation.
