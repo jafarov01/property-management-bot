@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: eivissa-operations-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: RUN_SCHEDULER
+        value: true
+      - key: TIMEZONE
+        value: Europe/Budapest
+      # Add your environment variables here:
+      # - key: TELEGRAM_BOT_TOKEN
+      #   value: your_telegram_bot_token
+      # - key: SLACK_BOT_TOKEN
+      #   value: your_slack_bot_token
+      # - key: GEMINI_API_KEY
+      #   value: your_gemini_api_key
+      # - key: DATABASE_URL
+      #   fromDatabase:
+      #     name: eivissa-postgres
+      #     property: connectionString
+
+databases:
+  - name: eivissa-postgres
+    plan: free
+    databaseName: eivissa_operations
+    user: eivissa_user

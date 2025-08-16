@@ -1,0 +1,83 @@
+{
+  "name": "Eivissa Operations Bot",
+  "description": "AI-powered property management system with multi-platform integration",
+  "repository": "https://github.com/your-username/eivissa-operations-bot",
+  "logo": "https://via.placeholder.com/120x120.png?text=EOB",
+  "keywords": ["property-management", "telegram-bot", "slack-integration", "ai", "fastapi"],
+  "stack": "heroku-22",
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    }
+  ],
+  "formation": {
+    "web": {
+      "quantity": 1,
+      "size": "basic"
+    }
+  },
+  "addons": [
+    {
+      "plan": "heroku-postgresql:essential-0"
+    }
+  ],
+  "env": {
+    "TELEGRAM_BOT_TOKEN": {
+      "description": "Telegram bot token from @BotFather",
+      "required": true
+    },
+    "TELEGRAM_TARGET_CHAT_ID": {
+      "description": "Telegram group chat ID (starts with -)",
+      "required": true
+    },
+    "SLACK_BOT_TOKEN": {
+      "description": "Slack bot token (starts with xoxb-)",
+      "required": true
+    },
+    "SLACK_SIGNING_SECRET": {
+      "description": "Slack app signing secret",
+      "required": true
+    },
+    "SLACK_CHECKIN_CHANNEL_ID": {
+      "description": "Slack channel ID for check-in lists",
+      "required": true
+    },
+    "SLACK_CLEANING_CHANNEL_ID": {
+      "description": "Slack channel ID for cleaning lists",
+      "required": true
+    },
+    "SLACK_USER_ID_OF_LIST_POSTER": {
+      "description": "Authorized Slack user ID for posting lists",
+      "required": true
+    },
+    "GEMINI_API_KEY": {
+      "description": "Google Gemini AI API key",
+      "required": true
+    },
+    "IMAP_USERNAME": {
+      "description": "Gmail username for email monitoring",
+      "required": true
+    },
+    "IMAP_PASSWORD": {
+      "description": "Gmail app-specific password",
+      "required": true
+    },
+    "WEBHOOK_URL": {
+      "description": "Your app's public URL (will be set automatically)",
+      "required": false
+    },
+    "RUN_SCHEDULER": {
+      "description": "Enable scheduled tasks",
+      "value": "true",
+      "required": false
+    },
+    "TIMEZONE": {
+      "description": "Application timezone",
+      "value": "Europe/Budapest",
+      "required": false
+    }
+  },
+  "scripts": {
+    "postdeploy": "python -c \"print('Deployment successful! Configure webhooks in Slack and Telegram.')\""
+  }
+}

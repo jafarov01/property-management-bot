@@ -7,7 +7,7 @@ psycopg2-binary
 python-dotenv
 slack_bolt
 aiohttp
-python-telegram-bot[ext]==20.8
+python-telegram-bot[ext]==22.3
 google-generativeai
 requests
 pytz

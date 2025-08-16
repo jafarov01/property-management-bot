@@ -20,6 +20,11 @@ async def send_telegram_message(
     parse_mode: str = "Markdown",
 ):
     """Sends a message to a specific topic and returns the sent message object."""
+    # If bot is None (test mode), just log the message instead of sending
+    if bot is None:
+        print(f"[TELEGRAM-TEST] {topic_name}: {text}")
+        return None
+    
     topic_id = TELEGRAM_TOPIC_IDS.get(topic_name)
     message_thread_id_to_send = topic_id if topic_name != "GENERAL" else None
 

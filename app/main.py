@@ -41,7 +41,12 @@ logging.basicConfig(
 
 # --- App Instances & Worker Queue ---
 slack_app = AsyncApp(token=config.SLACK_BOT_TOKEN, signing_secret=config.SLACK_SIGNING_SECRET)
-telegram_app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
+
+# Only initialize Telegram app if we have a real token (not test_token)
+telegram_app = None
+if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_BOT_TOKEN != "test_token":
+    telegram_app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
+
 slack_handler = AsyncSlackRequestHandler(slack_app)
 email_queue = asyncio.Queue()
 
@@ -82,23 +87,25 @@ async def lifespan(app: FastAPI):
     logging.info("LIFESPAN: Email parsing worker task has been created.")
 
 
-    command_mapping = {
-        "help": telegram_handlers.help_command, "status": telegram_handlers.status_command,
-        "check": telegram_handlers.check_command, "occupied": telegram_handlers.occupied_command,
-        "available": telegram_handlers.available_command, "pending_cleaning": telegram_handlers.pending_cleaning_command,
-        "relocate": telegram_handlers.relocate_command, "rename_property": telegram_handlers.rename_property_command,
-        "set_clean": telegram_handlers.set_clean_command, "early_checkout": telegram_handlers.early_checkout_command,
-        "cancel_booking": telegram_handlers.cancel_booking_command, "edit_booking": telegram_handlers.edit_booking_command,
-        "log_issue": telegram_handlers.log_issue_command, "block_property": telegram_handlers.block_property_command,
-        "unblock_property": telegram_handlers.unblock_property_command, "booking_history": telegram_handlers.booking_history_command,
-        "find_guest": telegram_handlers.find_guest_command, "daily_revenue": telegram_handlers.daily_revenue_command,
-        "relocations": telegram_handlers.relocations_command,
-    }
-    for command, handler_func in command_mapping.items():
-        telegram_app.add_handler(CommandHandler(command, handler_func))
+    # Only set up Telegram handlers if we have a real Telegram app
+    if telegram_app:
+        command_mapping = {
+            "help": telegram_handlers.help_command, "status": telegram_handlers.status_command,
+            "check": telegram_handlers.check_command, "occupied": telegram_handlers.occupied_command,
+            "available": telegram_handlers.available_command, "pending_cleaning": telegram_handlers.pending_cleaning_command,
+            "relocate": telegram_handlers.relocate_command, "rename_property": telegram_handlers.rename_property_command,
+            "set_clean": telegram_handlers.set_clean_command, "early_checkout": telegram_handlers.early_checkout_command,
+            "cancel_booking": telegram_handlers.cancel_booking_command, "edit_booking": telegram_handlers.edit_booking_command,
+            "log_issue": telegram_handlers.log_issue_command, "block_property": telegram_handlers.block_property_command,
+            "unblock_property": telegram_handlers.unblock_property_command, "booking_history": telegram_handlers.booking_history_command,
+            "find_guest": telegram_handlers.find_guest_command, "daily_revenue": telegram_handlers.daily_revenue_command,
+            "relocations": telegram_handlers.relocations_command,
+        }
+        for command, handler_func in command_mapping.items():
+            telegram_app.add_handler(CommandHandler(command, handler_func))
 
-    telegram_app.add_handler(CallbackQueryHandler(telegram_handlers.button_callback_handler))
-    telegram_app.add_error_handler(error_handler)
+        telegram_app.add_handler(CallbackQueryHandler(telegram_handlers.button_callback_handler))
+        telegram_app.add_error_handler(error_handler)
 
     if os.getenv("RUN_SCHEDULER") == "true":
         scheduler.add_job(daily_midnight_task, 'cron', hour=0, minute=5, id="midnight_cleaner", replace_existing=True)
@@ -109,18 +116,23 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         logging.info("LIFESPAN: APScheduler started in leader process.")
     
-    await telegram_app.initialize()
-    await telegram_app.start()
-    webhook_url = f"{config.WEBHOOK_URL}/telegram/webhook"
-    await telegram_app.bot.set_webhook(url=webhook_url)
-    logging.info(f"LIFESPAN: Telegram webhook set.")
+    # Only initialize Telegram if we have a real app
+    if telegram_app:
+        await telegram_app.initialize()
+        await telegram_app.start()
+        webhook_url = f"{config.WEBHOOK_URL}/telegram/webhook"
+        await telegram_app.bot.set_webhook(url=webhook_url)
+        logging.info(f"LIFESPAN: Telegram webhook set.")
+    else:
+        logging.info("LIFESPAN: Telegram disabled (using test token)")
     
     yield
     
     logging.info("LIFESPAN: Application shutdown...")
     worker_task.cancel()
-    await telegram_app.stop()
-    await telegram_app.shutdown()
+    if telegram_app:
+        await telegram_app.stop()
+        await telegram_app.shutdown()
     scheduler.shutdown(wait=False)
     logging.info("LIFESPAN: All services shut down gracefully.")
 
@@ -134,7 +146,8 @@ app = FastAPI(lifespan=lifespan)
 @slack_app.event("message")
 async def handle_message_events(body: dict, ack):
     await ack()
-    asyncio.create_task(slack_processor.process_slack_message(payload=body, bot=telegram_app.bot))
+    bot = telegram_app.bot if telegram_app else None
+    asyncio.create_task(slack_processor.process_slack_message(payload=body, bot=bot))
 
 @app.get("/")
 async def health_check():
@@ -142,8 +155,11 @@ async def health_check():
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(req: Request):
-    await telegram_app.process_update(Update.de_json(await req.json(), telegram_app.bot))
-    return Response(status_code=200)
+    if telegram_app:
+        await telegram_app.process_update(Update.de_json(await req.json(), telegram_app.bot))
+        return Response(status_code=200)
+    else:
+        return Response(status_code=503, content="Telegram bot not configured")
 
 @app.post("/slack/events")
 async def slack_events_endpoint(req: Request):
