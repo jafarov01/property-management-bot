@@ -204,10 +204,9 @@ async def early_checkout_command(
             f"Property `{prop.code}` is currently `{prop.status}`, not OCCUPIED."
         )
     else:
-        # **BUG FIX**: Also update the booking status.
+        # **BUG FIX**: Find the active booking and update its status.
         res = await db.execute(
-            select(models.Booking)
-            .filter(
+            select(models.Booking).filter(
                 models.Booking.property_id == prop.id, 
                 models.Booking.status == models.BookingStatus.ACTIVE
             ).order_by(models.Booking.id.desc())
@@ -408,9 +407,9 @@ async def cancel_booking_command(
             f"Property `{prop.code}` is not occupied."
         )
     else:
+        # **BUG FIX**: Find the MOST RECENT active booking.
         res = await db.execute(
-            select(models.Booking)
-            .filter(
+            select(models.Booking).filter(
                 models.Booking.property_id == prop.id, 
                 models.Booking.status == models.BookingStatus.ACTIVE
             ).order_by(models.Booking.id.desc())
@@ -418,7 +417,6 @@ async def cancel_booking_command(
         booking = res.scalars().first()
         if booking:
             booking.status = models.BookingStatus.CANCELLED
-            # **BUG FIX**: This now correctly sets the property to PENDING_CLEANING
             prop.status = models.PropertyStatus.PENDING_CLEANING
             await db.commit()
             report = telegram_client.format_simple_success(
@@ -487,12 +485,14 @@ async def cancel_pre_checkin_command(
         )
     if error_messages:
         report_parts.append("\n".join(["❌ *Errors:*", *error_messages]))
-
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="\n\n".join(report_parts),
-        parse_mode="Markdown",
-    )
+    
+    # Send a response only if there is something to report
+    if report_parts:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="\n\n".join(report_parts),
+            parse_mode="Markdown",
+        )
 
 
 @db_session_manager
