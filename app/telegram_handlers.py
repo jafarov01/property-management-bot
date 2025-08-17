@@ -47,7 +47,7 @@ COMMANDS_HELP_MANUAL = {
         "example": "/set_clean D2",
     },
     "cancel_booking": {
-        "description": "Cancel an active booking and make the property available.",
+        "description": "Cancel an active booking and mark the property for cleaning.",
         "example": "/cancel_booking A1",
     },
     # --- NEW COMMAND ADDED ---
@@ -387,7 +387,7 @@ async def pending_cleaning_command(
 async def cancel_booking_command(
     update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
 ):
-    """Cancels an active booking and makes the property available."""
+    """Cancels an active booking and marks the property for cleaning."""
     prop = await get_property_from_context(update, context.args, db)
     if not prop:
         return
@@ -407,10 +407,10 @@ async def cancel_booking_command(
         booking = res.scalars().first()
         if booking:
             booking.status = models.BookingStatus.CANCELLED
-            prop.status = models.PropertyStatus.AVAILABLE
+            prop.status = models.PropertyStatus.PENDING_CLEANING
             await db.commit()
             report = telegram_client.format_simple_success(
-                f"Booking for *{booking.guest_name}* in `{prop.code}` has been cancelled. The property is now available."
+                f"Booking for *{booking.guest_name}* in `{prop.code}` has been cancelled. The property is now PENDING CLEANING."
             )
         else:
             report = telegram_client.format_simple_error(
@@ -752,9 +752,7 @@ async def button_callback_handler(
             props, for_relocation_from=prop_code
         )
 
-        # This check prevents an error if the user clicks the button multiple times.
         if report not in query.message.text:
-            # Re-applying `query.message.reply_markup` ensures buttons persist.
             await query.edit_message_text(
                 text=f"{query.message.text_markdown}\n\n{report}",
                 parse_mode="Markdown",
@@ -776,15 +774,13 @@ async def button_callback_handler(
             )
             return
 
-        # Perform the swap
         active_booking.status = models.BookingStatus.PENDING_RELOCATION
         pending_booking.status = models.BookingStatus.ACTIVE
         await db.commit()
 
-        # Generate new text and a NEW keyboard with updated callback data
         new_text, new_keyboard = telegram_client.format_conflict_alert(
             prop_code=active_booking.property_code,
-            active_booking=pending_booking,  # The roles are now swapped
+            active_booking=pending_booking,
             pending_booking=active_booking,
         )
 
@@ -793,7 +789,7 @@ async def button_callback_handler(
             text=confirmation_text, parse_mode="Markdown", reply_markup=new_keyboard
         )
 
-    # --- NEW: Cancel Pending Relocation Action ---
+    # --- Cancel Pending Relocation Action ---
     elif action == "cancel_pending_relocation":
         pending_booking_id = data[0]
         res = await db.execute(select(models.Booking).filter(models.Booking.id == pending_booking_id))
@@ -816,7 +812,6 @@ async def button_callback_handler(
         booking_to_cancel.status = models.BookingStatus.CANCELLED
         await db.commit()
 
-        # Final resolution message with all buttons removed
         new_text = (
             f"{query.message.text_markdown}\n\n---\n"
             f"✅ *Conflict Resolved.*\nBooking for *{booking_to_cancel.guest_name}* has been cancelled."

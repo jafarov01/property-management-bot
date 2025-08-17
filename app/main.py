@@ -1,11 +1,4 @@
 # FILE: app/main.py
-# VERSION: 2.6 (Final Rigid Fix)
-# ==============================================================================
-# UPDATED: Fixed a critical blocking issue during startup. The synchronous
-# `models.Base.metadata.create_all` call has been wrapped in `conn.run_sync`,
-# allowing the database tables to be created without blocking the async event
-# loop. This ensures the email parsing worker starts correctly.
-# ==============================================================================
 import logging
 import sys
 import os
@@ -42,7 +35,6 @@ logging.basicConfig(
 # --- App Instances & Worker Queue ---
 slack_app = AsyncApp(token=config.SLACK_BOT_TOKEN, signing_secret=config.SLACK_SIGNING_SECRET)
 
-# Only initialize Telegram app if we have a real token (not test_token)
 telegram_app = None
 if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_BOT_TOKEN != "test_token":
     telegram_app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
@@ -70,7 +62,6 @@ async def email_parsing_worker(queue: asyncio.Queue):
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logging.error("Exception caught by global error handler", exc_info=context.error)
-    # ... error handling logic ...
 
 # --- Application Lifespan (Startup/Shutdown) ---
 @asynccontextmanager
@@ -78,16 +69,12 @@ async def lifespan(app: FastAPI):
     logging.info("LIFESPAN: Application startup...")
     logging.info(f"LIFESPAN: Connecting to database at {config.DATABASE_URL}")
     
-    # --- FIX: Run the synchronous table creation in a non-blocking way ---
-    # The following line is removed as Alembic now handles schema creation.
     async with async_engine.begin() as conn:
         await conn.run_sync(models.Base.metadata.create_all)
     
     worker_task = asyncio.create_task(email_parsing_worker(email_queue))
     logging.info("LIFESPAN: Email parsing worker task has been created.")
 
-
-    # Only set up Telegram handlers if we have a real Telegram app
     if telegram_app:
         command_mapping = {
             "help": telegram_handlers.help_command, "status": telegram_handlers.status_command,
@@ -95,7 +82,10 @@ async def lifespan(app: FastAPI):
             "available": telegram_handlers.available_command, "pending_cleaning": telegram_handlers.pending_cleaning_command,
             "relocate": telegram_handlers.relocate_command, "rename_property": telegram_handlers.rename_property_command,
             "set_clean": telegram_handlers.set_clean_command, "early_checkout": telegram_handlers.early_checkout_command,
-            "cancel_booking": telegram_handlers.cancel_booking_command, "edit_booking": telegram_handlers.edit_booking_command,
+            "cancel_booking": telegram_handlers.cancel_booking_command,
+            # --- NEW COMMAND REGISTERED ---
+            "cancelprecheckin": telegram_handlers.cancel_pre_checkin_command,
+            "edit_booking": telegram_handlers.edit_booking_command,
             "log_issue": telegram_handlers.log_issue_command, "block_property": telegram_handlers.block_property_command,
             "unblock_property": telegram_handlers.unblock_property_command, "booking_history": telegram_handlers.booking_history_command,
             "find_guest": telegram_handlers.find_guest_command, "daily_revenue": telegram_handlers.daily_revenue_command,
@@ -116,7 +106,6 @@ async def lifespan(app: FastAPI):
         scheduler.start()
         logging.info("LIFESPAN: APScheduler started in leader process.")
     
-    # Only initialize Telegram if we have a real app
     if telegram_app:
         await telegram_app.initialize()
         await telegram_app.start()
@@ -138,9 +127,6 @@ async def lifespan(app: FastAPI):
 
 # --- FastAPI App Initialization ---
 app = FastAPI(lifespan=lifespan)
-
-# --- Migration Endpoint (Remove after use) ---
-# The secret migration endpoints below are removed as Alembic now handles all schema changes.
 
 # --- API Endpoints ---
 @slack_app.event("message")
@@ -164,8 +150,8 @@ async def telegram_webhook(req: Request):
 @app.post("/slack/events")
 async def slack_events_endpoint(req: Request):
     return await slack_handler.handle(req)
-from .models import Base
 
+from .models import Base
 @app.get("/debug/describe_tables")
 async def describe_tables(db: AsyncSession = Depends(get_db)):
     """
