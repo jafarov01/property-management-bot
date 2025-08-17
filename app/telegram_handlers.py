@@ -50,6 +50,11 @@ COMMANDS_HELP_MANUAL = {
         "description": "Cancel an active booking and make the property available.",
         "example": "/cancel_booking A1",
     },
+    # --- NEW COMMAND ADDED ---
+    "cancelprecheckin": {
+        "description": "Cancel bookings for occupied properties without needing to clean them.",
+        "example": "/cancelprecheckin P1 P2",
+    },
     "edit_booking": {
         "description": "Edit details of an active booking (guest_name, due_payment, platform).",
         "example": "/edit_booking K4 guest_name Maria Garcia-Lopez",
@@ -413,6 +418,70 @@ async def cancel_booking_command(
             )
     await context.bot.send_message(
         chat_id=update.effective_chat.id, text=report, parse_mode="Markdown"
+    )
+
+
+# --- NEW COMMAND FUNCTION ---
+@db_session_manager
+async def cancel_pre_checkin_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
+):
+    """Cancels active bookings and sets properties to AVAILABLE without cleaning."""
+    if not context.args:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Usage: `/cancelprecheckin [CODE_1] [CODE_2] ...`",
+        )
+        return
+
+    success_codes = []
+    error_messages = []
+
+    for prop_code in context.args:
+        prop_code = prop_code.upper()
+        res = await db.execute(select(models.Property).filter(models.Property.code == prop_code))
+        prop = res.scalars().first()
+
+        if not prop:
+            error_messages.append(f"`{prop_code}`: Not found.")
+            continue
+
+        if prop.status != models.PropertyStatus.OCCUPIED:
+            error_messages.append(f"`{prop_code}`: Not occupied.")
+            continue
+
+        res = await db.execute(
+            select(models.Booking).filter(
+                models.Booking.property_id == prop.id,
+                models.Booking.status == models.BookingStatus.ACTIVE
+            )
+        )
+        booking = res.scalars().first()
+
+        if not booking:
+            error_messages.append(f"`{prop_code}`: No active booking found.")
+            continue
+        
+        # Perform the cancellation
+        booking.status = models.BookingStatus.CANCELLED
+        prop.status = models.PropertyStatus.AVAILABLE
+        success_codes.append(prop_code)
+
+    await db.commit()
+
+    # Format the report
+    report_parts = []
+    if success_codes:
+        report_parts.append(
+            f"✅ Bookings cancelled and properties set to *AVAILABLE* for: `{', '.join(sorted(success_codes))}`"
+        )
+    if error_messages:
+        report_parts.append("\n".join(["❌ *Errors:*", *error_messages]))
+
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="\n\n".join(report_parts),
+        parse_mode="Markdown",
     )
 
 

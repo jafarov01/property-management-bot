@@ -5,7 +5,7 @@ import datetime
 import json
 import re
 import google.generativeai as genai
-from .config import GEMINI_API_KEY  # <-- FIX: Changed to relative import
+from .config import GEMINI_API_KEY
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
@@ -18,7 +18,6 @@ async def parse_checkin_list_with_ai(
     Uses a robust, few-shot prompt to parse check-in data with high accuracy,
     handling messy and varied inputs.
     """
-    # This advanced prompt includes examples to guide the AI on handling edge cases.
     prompt = f"""
     You are a high-precision data extraction bot. Your task is to analyze user text and convert it into a structured JSON format without fail.
 
@@ -71,7 +70,6 @@ async def parse_checkin_list_with_ai(
     try:
         response = await model.generate_content_async(prompt)
 
-        # More robust cleaning: find the first '[' and the last ']' to extract the JSON array
         match = re.search(r"\[.*\]", response.text, re.DOTALL)
         if not match:
             print(f"AI Check-in Parsing Error: No valid JSON array found in response.")
@@ -87,6 +85,7 @@ async def parse_checkin_list_with_ai(
         for item in parsed_data:
             if not isinstance(item, dict):
                 continue
+            # **FIX**: The hardcoded 'status' field has been removed.
             validated_bookings.append(
                 {
                     "property_code": str(item.get("property_code", "UNKNOWN")).upper(),
@@ -95,7 +94,6 @@ async def parse_checkin_list_with_ai(
                     "due_payment": item.get("due_payment", "N/A"),
                     "checkin_date": datetime.date.fromisoformat(checkin_date),
                     "checkout_date": None,
-                    "status": "Active",
                 }
             )
         return validated_bookings
@@ -139,7 +137,6 @@ async def parse_cleaning_list_with_ai(message_text: str) -> List[str]:
     try:
         response = await model.generate_content_async(prompt)
 
-        # More robust cleaning: find the first '[' and the last ']' to extract the JSON array
         match = re.search(r"\[.*\]", response.text, re.DOTALL)
         if not match:
             print(f"AI Cleaning Parsing Error: No valid JSON array found in response.")

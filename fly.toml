@@ -1,26 +1,29 @@
-app = "eivissa-operations-bot"
-primary_region = "fra"
+# fly.toml app configuration file generated for eivissa-operations-bot on 2025-08-17T01:15:35+02:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'eivissa-operations-bot'
+primary_region = 'fra'
 
 [build]
+
+[env]
+  PORT = '8000'
+  RUN_SCHEDULER = 'true'
+  TIMEZONE = 'Europe/Budapest'
 
 [http_service]
   internal_port = 8000
   force_https = true
-  auto_stop_machines = true
+  auto_stop_machines = false
   auto_start_machines = true
-  min_machines_running = 0
-  processes = ["app"]
+  min_machines_running = 1
+  processes = ['app']
 
 [[vm]]
-  cpu_kind = "shared"
-  cpus = 1
-  memory_mb = 256
-
-[env]
-  RUN_SCHEDULER = "true"
-  TIMEZONE = "Europe/Budapest"
-  PORT = "8000"
+  size = 'shared-cpu-1x'
 
 [[statics]]
-  guest_path = "/app/static"
-  url_prefix = "/static/"
+  guest_path = '/app/static'
+  url_prefix = '/static/'
