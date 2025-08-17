@@ -50,7 +50,6 @@ COMMANDS_HELP_MANUAL = {
         "description": "Cancel an active booking and mark the property for cleaning.",
         "example": "/cancel_booking A1",
     },
-    # --- NEW COMMAND ADDED ---
     "cancelprecheckin": {
         "description": "Cancel bookings for occupied properties without needing to clean them.",
         "example": "/cancelprecheckin P1 P2",
@@ -205,6 +204,18 @@ async def early_checkout_command(
             f"Property `{prop.code}` is currently `{prop.status}`, not OCCUPIED."
         )
     else:
+        # **BUG FIX**: Also update the booking status.
+        res = await db.execute(
+            select(models.Booking)
+            .filter(
+                models.Booking.property_id == prop.id, 
+                models.Booking.status == models.BookingStatus.ACTIVE
+            ).order_by(models.Booking.id.desc())
+        )
+        booking = res.scalars().first()
+        if booking:
+            booking.status = models.BookingStatus.DEPARTED
+            
         prop.status = models.PropertyStatus.PENDING_CLEANING
         await db.commit()
         report = telegram_client.format_simple_success(
@@ -402,15 +413,16 @@ async def cancel_booking_command(
             .filter(
                 models.Booking.property_id == prop.id, 
                 models.Booking.status == models.BookingStatus.ACTIVE
-            )
+            ).order_by(models.Booking.id.desc())
         )
         booking = res.scalars().first()
         if booking:
             booking.status = models.BookingStatus.CANCELLED
+            # **BUG FIX**: This now correctly sets the property to PENDING_CLEANING
             prop.status = models.PropertyStatus.PENDING_CLEANING
             await db.commit()
             report = telegram_client.format_simple_success(
-                f"Booking for *{booking.guest_name}* in `{prop.code}` has been cancelled. The property is now PENDING CLEANING."
+                f"Booking for *{booking.guest_name}* in `{prop.code}` has been cancelled. The property is now *PENDING CLEANING*."
             )
         else:
             report = telegram_client.format_simple_error(
@@ -421,7 +433,6 @@ async def cancel_booking_command(
     )
 
 
-# --- NEW COMMAND FUNCTION ---
 @db_session_manager
 async def cancel_pre_checkin_command(
     update: Update, context: ContextTypes.DEFAULT_TYPE, db: AsyncSession
@@ -449,12 +460,13 @@ async def cancel_pre_checkin_command(
         if prop.status != models.PropertyStatus.OCCUPIED:
             error_messages.append(f"`{prop_code}`: Not occupied.")
             continue
-
+        
+        # **BUG FIX**: Get the MOST RECENT active booking to avoid orphans.
         res = await db.execute(
             select(models.Booking).filter(
                 models.Booking.property_id == prop.id,
                 models.Booking.status == models.BookingStatus.ACTIVE
-            )
+            ).order_by(models.Booking.id.desc())
         )
         booking = res.scalars().first()
 
@@ -462,14 +474,12 @@ async def cancel_pre_checkin_command(
             error_messages.append(f"`{prop_code}`: No active booking found.")
             continue
         
-        # Perform the cancellation
         booking.status = models.BookingStatus.CANCELLED
         prop.status = models.PropertyStatus.AVAILABLE
         success_codes.append(prop_code)
 
     await db.commit()
 
-    # Format the report
     report_parts = []
     if success_codes:
         report_parts.append(
@@ -698,7 +708,6 @@ async def daily_revenue_command(
     bookings = res.scalars().all()
     total_revenue = 0.0
     for b in bookings:
-        # Use regex to find the first number (integer or float) in the payment string
         numbers = re.findall(r"\d+\.?\d*", b.due_payment)
         if numbers:
             total_revenue += float(numbers[0])
@@ -739,7 +748,6 @@ async def button_callback_handler(
     await query.answer()
     action, *data = query.data.split(":")
 
-    # --- Show Available Rooms Action ---
     if action == "show_available":
         prop_code = data[0]
         res = await db.execute(
@@ -759,7 +767,6 @@ async def button_callback_handler(
                 reply_markup=query.message.reply_markup,
             )
 
-    # --- Swap Relocation Action ---
     elif action == "swap_relocation":
         active_booking_id, pending_booking_id = data[0], data[1]
         res1 = await db.execute(select(models.Booking).filter(models.Booking.id == active_booking_id))
@@ -789,7 +796,6 @@ async def button_callback_handler(
             text=confirmation_text, parse_mode="Markdown", reply_markup=new_keyboard
         )
 
-    # --- Cancel Pending Relocation Action ---
     elif action == "cancel_pending_relocation":
         pending_booking_id = data[0]
         res = await db.execute(select(models.Booking).filter(models.Booking.id == pending_booking_id))
@@ -820,7 +826,6 @@ async def button_callback_handler(
             text=new_text, parse_mode="Markdown", reply_markup=None
         )
 
-    # --- Handle Email Action ---
     elif action == "handle_email":
         alert_id = int(data[0])
         res = await db.execute(select(models.EmailAlert).filter(models.EmailAlert.id == alert_id))

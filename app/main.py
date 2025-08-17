@@ -83,7 +83,6 @@ async def lifespan(app: FastAPI):
             "relocate": telegram_handlers.relocate_command, "rename_property": telegram_handlers.rename_property_command,
             "set_clean": telegram_handlers.set_clean_command, "early_checkout": telegram_handlers.early_checkout_command,
             "cancel_booking": telegram_handlers.cancel_booking_command,
-            # --- NEW COMMAND REGISTERED ---
             "cancelprecheckin": telegram_handlers.cancel_pre_checkin_command,
             "edit_booking": telegram_handlers.edit_booking_command,
             "log_issue": telegram_handlers.log_issue_command, "block_property": telegram_handlers.block_property_command,
@@ -154,9 +153,7 @@ async def slack_events_endpoint(req: Request):
 from .models import Base
 @app.get("/debug/describe_tables")
 async def describe_tables(db: AsyncSession = Depends(get_db)):
-    """
-    A hidden endpoint to describe all tables and their columns.
-    """
+    """A hidden endpoint to describe all tables and their columns."""
     results = {}
     for table_name, table in Base.metadata.tables.items():
         query = text(f"""
